@@ -31,9 +31,8 @@ final class AuthRepository {
         )
         let response = await api.request(payload)
         if response.isSuccess(), let token = response.extractToken(), !token.isEmpty {
-            await MailDatabase.shared.clearAll()   // fresh account → drop old cache
-            keychain.saveToken(token)
-            keychain.saveEmail(email)
+            _ = keychain.upsertAccount(email: email, token: token)
+            keychain.setActiveEmail(email)
         }
         return response
     }
@@ -83,9 +82,8 @@ final class AuthRepository {
         )
         let response = await api.request(payload)
         if response.isSuccess(), let token = response.extractToken(), !token.isEmpty {
-            await MailDatabase.shared.clearAll()
-            keychain.saveToken(token)
-            keychain.saveEmail(email)
+            _ = keychain.upsertAccount(email: email, token: token)
+            keychain.setActiveEmail(email)
         }
         return response
     }
@@ -115,14 +113,8 @@ final class AuthRepository {
         )
         let response = await api.request(payload)
         if response.isSuccess(), let token = response.extractToken(), !token.isEmpty {
-            keychain.saveToken(token)
+            keychain.updateActiveToken(token)
         }
         return response
-    }
-
-    // MARK: - logout
-
-    func logout() {
-        keychain.clear()
     }
 }

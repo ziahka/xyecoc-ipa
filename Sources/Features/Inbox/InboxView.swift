@@ -5,7 +5,8 @@
 //  Port of `InboxScreen.kt` + `InboxViewModel`. Offline-first: the list is
 //  driven from the local cache (`MailDatabase`) and reconciled by the repo's
 //  `fetchMails`. Includes pull-to-refresh, swipe actions, cursor pagination
-//  (via `last_mail_id`), search, and folder navigation.
+//  (via `last_mail_id`), search, folder navigation, a compose FAB, and a
+//  multi-account switcher.
 //
 
 import SwiftUI
@@ -27,7 +28,6 @@ final class InboxViewModel: ObservableObject {
     private let db = MailDatabase.shared
     private var didStart = false
 
-    /// Client-side unread filter (mirrors the Kotlin `displayedMails` remember).
     var displayedMails: [MailItem] {
         filterUnreadOnly ? mails.filter { !$0.read } : mails
     }
@@ -39,7 +39,6 @@ final class InboxViewModel: ObservableObject {
         await refresh()
     }
 
-    /// Re-read the current folder (+ folders/tags) from the local cache.
     func reload() async {
         let all = await db.mails(folder: currentFolder)
         let q = searchQuery.trimmingCharacters(in: .whitespaces)
@@ -67,8 +66,7 @@ final class InboxViewModel: ObservableObject {
         searchQuery = q
         Task {
             await reload()
-            _ = await repo.fetchMails(folder: currentFolder,
-                                      searchText: q.isEmpty ? nil : q)
+            _ = await repo.fetchMails(folder: currentFolder, searchText: q.isEmpty ? nil : q)
             await reload()
         }
     }
@@ -81,27 +79,22 @@ final class InboxViewModel: ObservableObject {
         await reload()
     }
 
-    /// Cursor pagination: fetch the page older than the smallest loaded id.
     func loadMore() async {
         guard searchQuery.isEmpty, let cursor = mails.map(\.id).min() else { return }
         _ = await repo.fetchMails(folder: currentFolder, page: 1, lastMailId: cursor)
         await reload()
     }
 
-    // Row actions ---------------------------------------------------------
-
     func toggleStar(_ mail: MailItem) {
         Task {
-            _ = await repo.performMailAction(mailId: mail.id, action: "important",
-                                             folder: currentFolder)
+            _ = await repo.performMailAction(mailId: mail.id, action: "important", folder: currentFolder)
             await reload()
         }
     }
 
     func delete(_ mail: MailItem) {
         Task {
-            _ = await repo.performMailAction(mailId: mail.id, action: "delete",
-                                             folder: currentFolder)
+            _ = await repo.performMailAction(mailId: mail.id, action: "delete", folder: currentFolder)
             await reload()
         }
     }
@@ -147,16 +140,22 @@ let systemFolders: [SystemFolder] = [
 
 struct InboxView: View {
 
+    @ObservedObject var accounts: AccountStore
     @StateObject private var vm = InboxViewModel()
-    var onLogout: () -> Void = {}
+
+    @State private var showCompose = false
+    @State private var showAccounts = false
 
     private var searchBinding: Binding<String> {
         Binding(get: { vm.searchQuery }, set: { vm.onSearchChanged($0) })
     }
 
     private var folderTitle: String {
-        if let sys = systemFolders.first(where: { $0.id == vm.currentFolder }) { return sys.title }
-        return vm.currentFolder
+        systemFolders.first(where: { $0.id == vm.currentFolder })?.title ?? vm.currentFolder
+    }
+
+    private var activeInitial: String {
+        String(accounts.activeEmail?.first.map { String($0).uppercased() } ?? "?")
     }
 
     var body: some View {
@@ -193,21 +192,55 @@ struct InboxView: View {
             }
         }
         .listStyle(.plain)
+        .animation(.default, value: vm.displayedMails)
         .navigationTitle(folderTitle)
         .navigationBarTitleDisplayMode(.inline)
         .searchable(text: searchBinding, prompt: "Поиск в почте")
         .refreshable { await vm.refresh() }
         .safeAreaInset(edge: .top) { folderChips }
         .overlay { if vm.displayedMails.isEmpty { emptyState } }
+        .overlay(alignment: .bottomTrailing) { composeButton }
         .toolbar {
             ToolbarItem(placement: .navigationBarLeading) { folderMenu }
             ToolbarItem(placement: .navigationBarTrailing) { overflowMenu }
+            ToolbarItem(placement: .navigationBarTrailing) { accountButton }
         }
         .task { await vm.startIfNeeded() }
         .onAppear { Task { await vm.reload() } }
+        .sheet(isPresented: $showCompose, onDismiss: { Task { await vm.refresh() } }) {
+            ComposeView()
+        }
+        .sheet(isPresented: $showAccounts) {
+            AccountSwitcherView(accounts: accounts)
+        }
     }
 
-    // Horizontal quick-filter chips (Входящие / Непрочитанные / Важные / …).
+    // MARK: - Compose FAB
+
+    private var composeButton: some View {
+        Button { showCompose = true } label: {
+            Image(systemName: "square.and.pencil")
+                .font(.title2.weight(.semibold))
+                .foregroundStyle(.white)
+                .frame(width: 58, height: 58)
+                .background(Color.brand, in: Circle())
+                .shadow(color: .black.opacity(0.2), radius: 8, y: 4)
+        }
+        .padding(20)
+    }
+
+    private var accountButton: some View {
+        Button { showAccounts = true } label: {
+            Text(activeInitial)
+                .font(.caption.bold())
+                .foregroundStyle(.white)
+                .frame(width: 30, height: 30)
+                .background(Color.brand, in: Circle())
+        }
+    }
+
+    // MARK: - Chips + menus
+
     private var folderChips: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
@@ -227,8 +260,7 @@ struct InboxView: View {
                     vm.selectFolder("trash")
                 }
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 8)
+            .padding(.horizontal, 16).padding(.vertical, 8)
         }
         .background(.bar)
     }
@@ -240,8 +272,8 @@ struct InboxView: View {
                 Text(title).font(.subheadline)
             }
             .padding(.horizontal, 14).padding(.vertical, 7)
-            .background(active ? Color.accentColor.opacity(0.2) : Color.secondary.opacity(0.12))
-            .foregroundStyle(active ? Color.accentColor : Color.primary)
+            .background(active ? Color.brand.opacity(0.2) : Color.secondary.opacity(0.12))
+            .foregroundStyle(active ? Color.brand : Color.primary)
             .clipShape(Capsule())
         }
         .buttonStyle(.plain)
@@ -251,19 +283,13 @@ struct InboxView: View {
         Menu {
             Section("Папки") {
                 ForEach(systemFolders) { f in
-                    Button {
-                        vm.selectFolder(f.id)
-                    } label: {
-                        Label(f.title, systemImage: f.icon)
-                    }
+                    Button { vm.selectFolder(f.id) } label: { Label(f.title, systemImage: f.icon) }
                 }
             }
             if !vm.folders.isEmpty {
                 Section("Мои папки") {
                     ForEach(vm.folders) { f in
-                        Button { vm.selectFolder(f.name) } label: {
-                            Label(f.name, systemImage: "folder")
-                        }
+                        Button { vm.selectFolder(f.name) } label: { Label(f.name, systemImage: "folder") }
                     }
                 }
             }
@@ -281,10 +307,6 @@ struct InboxView: View {
                                  set: { vm.filterUnreadOnly = $0 })) {
                 Label("Только непрочитанные", systemImage: "envelope.badge")
             }
-            Divider()
-            Button(role: .destructive, action: onLogout) {
-                Label("Выйти", systemImage: "rectangle.portrait.and.arrow.right")
-            }
         } label: {
             Image(systemName: "ellipsis.circle")
         }
@@ -297,13 +319,79 @@ struct InboxView: View {
                 .foregroundStyle(.secondary)
             Text(vm.filterUnreadOnly ? "Нет непрочитанных писем" : "В этой папке нет писем")
                 .foregroundStyle(.secondary)
-            Button {
-                Task { await vm.refresh() }
-            } label: {
+            Button { Task { await vm.refresh() } } label: {
                 Label("Обновить", systemImage: "arrow.clockwise")
             }
         }
         .padding()
+    }
+}
+
+// MARK: - Account switcher
+
+struct AccountSwitcherView: View {
+    @ObservedObject var accounts: AccountStore
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section("Аккаунты (\(accounts.emails.count)/\(AccountStore.maxAccounts))") {
+                    ForEach(accounts.emails, id: \.self) { email in
+                        Button {
+                            Task { await accounts.setActive(email); dismiss() }
+                        } label: {
+                            HStack(spacing: 12) {
+                                Text(String(email.first.map { String($0).uppercased() } ?? "?"))
+                                    .font(.subheadline.bold()).foregroundStyle(.white)
+                                    .frame(width: 34, height: 34)
+                                    .background(Color.brand, in: Circle())
+                                Text(email).foregroundStyle(.primary).lineLimit(1)
+                                Spacer()
+                                if email == accounts.activeEmail {
+                                    Image(systemName: "checkmark.circle.fill").foregroundStyle(Color.brand)
+                                }
+                            }
+                        }
+                        .swipeActions {
+                            Button(role: .destructive) {
+                                Task { await accounts.remove(email) }
+                            } label: { Label("Удалить", systemImage: "trash") }
+                        }
+                    }
+                }
+
+                Section {
+                    NavigationLink {
+                        AddAccountView(accounts: accounts)
+                    } label: {
+                        Label("Добавить аккаунт", systemImage: "plus.circle")
+                    }
+                    .disabled(!accounts.canAddAccount)
+
+                    Button(role: .destructive) {
+                        Task { await accounts.logoutActive() }
+                    } label: {
+                        Label("Выйти из текущего", systemImage: "rectangle.portrait.and.arrow.right")
+                    }
+                }
+            }
+            .navigationTitle("Почтовые ящики")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) { Button("Готово") { dismiss() } }
+            }
+        }
+    }
+}
+
+struct AddAccountView: View {
+    @ObservedObject var accounts: AccountStore
+
+    var body: some View {
+        LoginFlowView { await accounts.onLoggedIn() }
+            .navigationTitle("Новый аккаунт")
+            .navigationBarTitleDisplayMode(.inline)
     }
 }
 
@@ -321,10 +409,9 @@ struct MailRow: View {
         HStack(alignment: .top, spacing: 12) {
             ZStack {
                 Circle()
-                    .fill(mail.read ? Color.secondary.opacity(0.3) : Color.accentColor)
+                    .fill(mail.read ? Color.secondary.opacity(0.3) : Color.brand)
                     .frame(width: 44, height: 44)
-                Text(avatarLetter)
-                    .font(.headline).foregroundStyle(.white)
+                Text(avatarLetter).font(.headline).foregroundStyle(.white)
             }
 
             VStack(alignment: .leading, spacing: 3) {
@@ -337,7 +424,7 @@ struct MailRow: View {
                     Text(DateUtils.formatDate(mail.createdAt))
                         .font(.caption).foregroundStyle(.secondary)
                     if !mail.read {
-                        Circle().fill(Color.accentColor).frame(width: 8, height: 8)
+                        Circle().fill(Color.brand).frame(width: 8, height: 8)
                     }
                 }
                 Text(mail.displaySubject())

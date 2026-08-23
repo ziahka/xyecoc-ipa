@@ -2,13 +2,9 @@
 //  ContentView.swift
 //  XyecocMail
 //
-//  Minimal but functional auth UI wired to `AuthRepository`, so you can test
-//  authentication against the live backend (api.xyecoc.com) immediately.
-//
-//  Port of the relevant parts of `AuthViewModel` / `AuthScreens.kt`:
-//   - login() normalizes bare usernames to "<name>@xyecoc.com"
-//   - status == 2 branches to the 2FA screen (carrying email + password)
-//   - status == 1 (or a token in `data`) is success
+//  Root routing + authentication UI. Shows the login flow when no account is
+//  active, otherwise the inbox for the active account. Supports adding another
+//  account (up to 15) via a presented login sheet.
 //
 
 import SwiftUI
@@ -28,7 +24,6 @@ enum AuthState: Equatable {
 final class AuthViewModel: ObservableObject {
 
     @Published var state: AuthState = .idle
-
     private let repo = AuthRepository()
 
     var isLoading: Bool { state == .loading }
@@ -65,13 +60,9 @@ final class AuthViewModel: ObservableObject {
         }
     }
 
-    func logout() {
-        repo.logout()
-        Task { await MailDatabase.shared.clearAll() }
-        state = .idle
-    }
+    /// Return to the login form (e.g. "Назад" from the 2FA screen).
+    func reset() { state = .idle }
 
-    /// Clear a transient error without leaving the current screen.
     func clearError() {
         if case .error = state { state = .idle }
     }
@@ -80,25 +71,43 @@ final class AuthViewModel: ObservableObject {
 // MARK: - Root
 
 struct ContentView: View {
+
+    @StateObject private var accounts = AccountStore()
+
+    var body: some View {
+        Group {
+            if let active = accounts.activeEmail {
+                NavigationStack {
+                    InboxView(accounts: accounts)
+                }
+                .id(active)   // rebuild the inbox (fresh cache) when switching accounts
+            } else {
+                LoginFlowView { await accounts.onLoggedIn() }
+            }
+        }
+        .tint(.brand)
+        .task { await accounts.syncActiveCache() }
+    }
+}
+
+// MARK: - Login flow wrapper (login ↔ 2FA)
+
+struct LoginFlowView: View {
+    var onAuthenticated: () async -> Void
     @StateObject private var vm = AuthViewModel()
 
     var body: some View {
         Group {
             switch vm.state {
-            case .success:
-                NavigationStack {
-                    InboxView(onLogout: { vm.logout() })
-                }
             case .requires2FA(let email, let password):
                 TwoFactorView(vm: vm, email: email, password: password)
             default:
                 LoginView(vm: vm)
             }
         }
-        .animation(.default, value: vm.state)
-        .onAppear {
-            // Auto-advance if a valid token is already in the Keychain.
-            if KeychainManager.shared.isLoggedIn { vm.state = .success }
+        .animation(.easeInOut, value: vm.state)
+        .onChange(of: vm.state) { newValue in
+            if newValue == .success { Task { await onAuthenticated() } }
         }
     }
 }
@@ -111,37 +120,43 @@ struct LoginView: View {
     @State private var password = ""
 
     var body: some View {
-        VStack(spacing: 20) {
+        VStack(spacing: 22) {
             Spacer()
 
-            Image(systemName: "envelope.circle.fill")
-                .resizable().scaledToFit().frame(width: 72, height: 72)
-                .foregroundStyle(.tint)
-            Text("Xyecoc Mail").font(.largeTitle.bold())
+            VStack(spacing: 14) {
+                Image(systemName: "envelope.circle.fill")
+                    .resizable().scaledToFit().frame(width: 76, height: 76)
+                    .foregroundStyle(Color.brand)
+                Text("Xyecoc Mail").font(.largeTitle.bold())
+                Text("Войдите в свой почтовый ящик")
+                    .font(.subheadline).foregroundStyle(.secondary)
+            }
 
             VStack(spacing: 12) {
-                TextField("Имя ящика или email", text: $email)
-                    .textContentType(.username)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .keyboardType(.emailAddress)
-                    .padding().background(.thinMaterial).clipShape(RoundedRectangle(cornerRadius: 10))
-
-                SecureField("Пароль", text: $password)
-                    .textContentType(.password)
-                    .padding().background(.thinMaterial).clipShape(RoundedRectangle(cornerRadius: 10))
+                inputField(systemImage: "person", placeholder: "Имя ящика или email") {
+                    TextField("Имя ящика или email", text: $email)
+                        .textContentType(.username)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .keyboardType(.emailAddress)
+                }
+                inputField(systemImage: "lock", placeholder: "Пароль") {
+                    SecureField("Пароль", text: $password)
+                        .textContentType(.password)
+                }
             }
 
             if case .error(let message) = vm.state {
                 Text(message).font(.footnote).foregroundStyle(.red)
                     .multilineTextAlignment(.center)
+                    .transition(.opacity)
             }
 
             Button {
                 vm.login(email: email, password: password)
             } label: {
                 if vm.isLoading {
-                    ProgressView().frame(maxWidth: .infinity)
+                    ProgressView().tint(.white).frame(maxWidth: .infinity)
                 } else {
                     Text("Войти").bold().frame(maxWidth: .infinity)
                 }
@@ -150,9 +165,20 @@ struct LoginView: View {
             .controlSize(.large)
             .disabled(vm.isLoading || email.isEmpty || password.isEmpty)
 
-            Spacer()
+            Spacer(); Spacer()
         }
-        .padding(24)
+        .padding(28)
+    }
+
+    private func inputField<Content: View>(systemImage: String, placeholder: String,
+                                           @ViewBuilder content: () -> Content) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: systemImage).foregroundStyle(.secondary).frame(width: 22)
+            content()
+        }
+        .padding(14)
+        .background(Color(.secondarySystemBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 }
 
@@ -165,14 +191,14 @@ struct TwoFactorView: View {
     @State private var code = ""
 
     var body: some View {
-        VStack(spacing: 20) {
+        VStack(spacing: 22) {
             Spacer()
 
             Image(systemName: "lock.shield.fill")
-                .resizable().scaledToFit().frame(width: 64, height: 64)
-                .foregroundStyle(.tint)
-            Text("Двухфакторная аутентификация").font(.title2.bold())
-                .multilineTextAlignment(.center)
+                .resizable().scaledToFit().frame(width: 68, height: 68)
+                .foregroundStyle(Color.brand)
+            Text("Двухфакторная аутентификация")
+                .font(.title2.bold()).multilineTextAlignment(.center)
             Text("Введите 6-значный код из приложения-аутентификатора для \(email)")
                 .font(.footnote).foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -181,7 +207,9 @@ struct TwoFactorView: View {
                 .keyboardType(.numberPad)
                 .multilineTextAlignment(.center)
                 .font(.title.monospaced())
-                .padding().background(.thinMaterial).clipShape(RoundedRectangle(cornerRadius: 10))
+                .padding()
+                .background(Color(.secondarySystemBackground))
+                .clipShape(RoundedRectangle(cornerRadius: 12))
                 .onChange(of: code) { newValue in
                     code = String(newValue.filter(\.isNumber).prefix(6))
                 }
@@ -194,7 +222,7 @@ struct TwoFactorView: View {
                 vm.verify2fa(email: email, password: password, code: code)
             } label: {
                 if vm.isLoading {
-                    ProgressView().frame(maxWidth: .infinity)
+                    ProgressView().tint(.white).frame(maxWidth: .infinity)
                 } else {
                     Text("Подтвердить").bold().frame(maxWidth: .infinity)
                 }
@@ -203,12 +231,12 @@ struct TwoFactorView: View {
             .controlSize(.large)
             .disabled(vm.isLoading || code.count < 6)
 
-            Button("Назад") { vm.logout() }
+            Button("Назад") { vm.reset() }
                 .font(.footnote)
 
-            Spacer()
+            Spacer(); Spacer()
         }
-        .padding(24)
+        .padding(28)
     }
 }
 

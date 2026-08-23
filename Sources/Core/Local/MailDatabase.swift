@@ -36,7 +36,20 @@ actor MailDatabase {
         var tags: [Tag]
     }
 
-    private let cacheURL: URL
+    private let appDir: URL
+    private var activeAccount: String
+
+    /// Per-account cache file so mailboxes never collide.
+    private var cacheURL: URL {
+        appDir.appendingPathComponent("cache-\(Self.sanitize(activeAccount)).json")
+    }
+
+    private static func sanitize(_ s: String) -> String {
+        let allowed = CharacterSet.alphanumerics
+        let scalars = s.unicodeScalars.map { allowed.contains($0) ? Character($0) : "_" }
+        let name = String(scalars)
+        return name.isEmpty ? "default" : name
+    }
 
     init() {
         let dir = (try? FileManager.default.url(
@@ -45,8 +58,27 @@ actor MailDatabase {
             ?? FileManager.default.temporaryDirectory
         let appDir = dir.appendingPathComponent("XyecocMail", isDirectory: true)
         try? FileManager.default.createDirectory(at: appDir, withIntermediateDirectories: true)
-        self.cacheURL = appDir.appendingPathComponent("cache.json")
+        self.appDir = appDir
+        self.activeAccount = KeychainManager.shared.activeEmail() ?? "default"
         load()
+    }
+
+    // MARK: - Per-account switching
+
+    /// Point the cache at a different account, reloading its isolated snapshot.
+    func activate(account: String) {
+        guard account != activeAccount else { return }
+        activeAccount = account
+        mailsById.removeAll()
+        folderList.removeAll()
+        tagList.removeAll()
+        load()
+    }
+
+    /// Delete a removed account's on-disk cache file.
+    func deleteCache(forAccount account: String) {
+        let url = appDir.appendingPathComponent("cache-\(Self.sanitize(account)).json")
+        try? FileManager.default.removeItem(at: url)
     }
 
     private func load() {

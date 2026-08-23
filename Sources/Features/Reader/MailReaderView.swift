@@ -86,6 +86,7 @@ struct MailReaderView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
     @State private var showFolderPicker = false
+    @State private var composeSeed: ComposeSeed?
 
     var body: some View {
         Group {
@@ -106,6 +107,12 @@ struct MailReaderView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
+                Button { composeSeed = replySeed() } label: {
+                    Image(systemName: "arrowshape.turn.up.left")
+                }
+                .disabled(vm.details == nil)
+            }
+            ToolbarItem(placement: .navigationBarTrailing) {
                 Button {
                     Task { await vm.deleteCurrent(); dismiss() }
                 } label: { Image(systemName: "trash") }
@@ -113,12 +120,20 @@ struct MailReaderView: View {
             ToolbarItem(placement: .navigationBarTrailing) { moreMenu }
         }
         .sheet(isPresented: $showFolderPicker) { folderPicker }
+        .sheet(item: $composeSeed) { seed in ComposeView(seed: seed) }
         .task { await vm.load(mailId: mailId) }
         .onDisappear { onChange() }
     }
 
     private var moreMenu: some View {
         Menu {
+            Button { composeSeed = replySeed() } label: {
+                Label("Ответить", systemImage: "arrowshape.turn.up.left")
+            }
+            Button { composeSeed = forwardSeed() } label: {
+                Label("Переслать", systemImage: "arrowshape.turn.up.right")
+            }
+            Divider()
             Button { Task { await vm.markImportant() } } label: {
                 Label("Пометить как важное", systemImage: "star")
             }
@@ -136,15 +151,40 @@ struct MailReaderView: View {
         }
     }
 
+    // MARK: - Reply / Forward seeds
+
+    private func quotedBody(_ d: MailDetails) -> String {
+        let header = "<b>От:</b> \(d.getDisplayNameSafe()) &lt;\(d.fromEmail ?? "")&gt;<br>"
+            + "<b>Кому:</b> \(d.to ?? "")<br>"
+            + "<b>Дата:</b> \(DateUtils.formatDate(d.createdAt))<br>"
+            + "<b>Тема:</b> \(d.subject ?? "")<br><br>"
+        return "<br><br><blockquote style=\"margin-left:10px;padding-left:10px;border-left:3px solid #ccc;color:#555;\">"
+            + header + vm.html + "</blockquote>"
+    }
+
+    private func replySeed() -> ComposeSeed {
+        guard let d = vm.details else { return ComposeSeed() }
+        let subject = d.getDisplaySubjectSafe()
+        let re = subject.lowercased().hasPrefix("re:") ? subject : "Re: \(subject)"
+        return ComposeSeed(to: d.fromEmail ?? "", subject: re, body: quotedBody(d))
+    }
+
+    private func forwardSeed() -> ComposeSeed {
+        guard let d = vm.details else { return ComposeSeed() }
+        let subject = d.subject ?? d.getDisplaySubjectSafe()
+        let fwd = subject.lowercased().hasPrefix("fwd:") ? subject : "Fwd: \(subject)"
+        return ComposeSeed(to: "", subject: fwd, body: quotedBody(d))
+    }
+
     private func headerCard(_ mail: MailDetails) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(mail.getDisplaySubjectSafe())
                 .font(.title3).fontWeight(.bold)
             HStack(spacing: 12) {
                 ZStack {
-                    Circle().fill(Color.accentColor.opacity(0.25)).frame(width: 44, height: 44)
+                    Circle().fill(Color.brand.opacity(0.25)).frame(width: 44, height: 44)
                     Text(initial(mail.getDisplayNameSafe()))
-                        .font(.headline).foregroundStyle(Color.accentColor)
+                        .font(.headline).foregroundStyle(Color.brand)
                 }
                 VStack(alignment: .leading, spacing: 1) {
                     Text(mail.getDisplayNameSafe()).fontWeight(.semibold)

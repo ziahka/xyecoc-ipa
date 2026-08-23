@@ -43,6 +43,10 @@ enum DateUtils {
 }
 
 extension Color {
+    /// Xyecoc brand palette (from the official logo).
+    static let brand = Color(hex: "#18C9E1") ?? .accentColor
+    static let brandLight = Color(hex: "#9AEDF9") ?? .accentColor
+
     /// Parses "#RRGGBB" / "RRGGBB" / "#RRGGBBAA". Returns nil on malformed input.
     init?(hex: String?) {
         guard var s = hex?.trimmingCharacters(in: .whitespacesAndNewlines), !s.isEmpty else {
