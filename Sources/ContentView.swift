@@ -67,6 +67,7 @@ final class AuthViewModel: ObservableObject {
 
     func logout() {
         repo.logout()
+        Task { await MailDatabase.shared.clearAll() }
         state = .idle
     }
 
@@ -85,7 +86,9 @@ struct ContentView: View {
         Group {
             switch vm.state {
             case .success:
-                LoggedInView(vm: vm)
+                NavigationStack {
+                    InboxView(onLogout: { vm.logout() })
+                }
             case .requires2FA(let email, let password):
                 TwoFactorView(vm: vm, email: email, password: password)
             default:
@@ -204,42 +207,6 @@ struct TwoFactorView: View {
                 .font(.footnote)
 
             Spacer()
-        }
-        .padding(24)
-    }
-}
-
-// MARK: - Placeholder post-login screen (proves the token round-trips)
-
-struct LoggedInView: View {
-    @ObservedObject var vm: AuthViewModel
-
-    private var maskedToken: String {
-        let t = KeychainManager.shared.getToken() ?? ""
-        guard t.count > 10 else { return t }
-        return "\(t.prefix(6))…\(t.suffix(4))"
-    }
-
-    var body: some View {
-        VStack(spacing: 16) {
-            Image(systemName: "checkmark.seal.fill")
-                .resizable().scaledToFit().frame(width: 64, height: 64)
-                .foregroundStyle(.green)
-            Text("Авторизация успешна").font(.title2.bold())
-
-            VStack(spacing: 4) {
-                Text(KeychainManager.shared.getEmail() ?? "—")
-                    .font(.headline)
-                Text("Token: \(maskedToken)")
-                    .font(.caption.monospaced()).foregroundStyle(.secondary)
-            }
-
-            Text("Next milestone: Inbox (GRDB cache + mail/default RPC).")
-                .font(.footnote).foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-
-            Button("Выйти", role: .destructive) { vm.logout() }
-                .buttonStyle(.bordered)
         }
         .padding(24)
     }

@@ -1,70 +1,233 @@
 # Xyecoc Mail — iOS (SwiftUI)
 
-A native SwiftUI port of the Android `com.xyecoc.mail` client, talking to the
-same backend (`api.xyecoc.com` JSON-RPC + `cdn.xyecoc.com`). This repo currently
-contains the **foundation layer**: models, Keychain, networking, auth + 2FA, and
-a functional login screen you can build into an unsigned `.ipa` and sideload.
+## 1. Введение
 
-## Project structure
+Это нативный iOS-порт почтового клиента **Xyecoc Mail** (изначально —
+Android-приложение на Kotlin/Jetpack Compose, `com.xyecoc.mail`), переписанный
+с нуля на **SwiftUI**. Проект работает с тем же самым бэкендом, что и Android-
+версия — JSON-RPC API на `api.xyecoc.com` и CDN на `cdn.xyecoc.com` — поэтому
+на сервере ничего менять не нужно, меняется только клиент.
+
+Ключевая особенность архитектуры: **ноль сторонних зависимостей**. Всё
+написано на `Foundation`, `Security`, `SwiftUI` и `WebKit` — стандартных
+фреймворках Apple. Не нужно ничего резолвить через Swift Package Manager,
+CocoaPods или Carthage — проект собирается «из коробки».
+
+Готовый билд — это **неподписанный `.ipa`-файл**, который затем подписывается
+и устанавливается на iPhone через Sideloadly или AltStore (см. раздел 4).
+
+### Текущий статус портирования
+
+- ✅ **Фундамент** — модели данных, Keychain, сетевой клиент, авторизация + 2FA, экран входа.
+- ✅ **Входящие и чтение писем (Milestone 1)** — офлайн-кэш, список писем со
+  свайп-действиями, pull-to-refresh, чтение письма через `WKWebView`, вложения.
+- ⏳ **Дальше в планах** — написание/отправка писем, realtime через Socket.IO,
+  настройки/поддержка (папки, ярлыки, фильтры, алиасы, 2FA-настройка).
+
+---
+
+## 2. Структура проекта
 
 ```
 xyecoc-ipa/
-├── project.yml                     # XcodeGen spec → generates XyecocMail.xcodeproj
-├── .github/workflows/build-ios.yml # CI: builds an unsigned .ipa on macOS runners
-├── Sources/
-│   ├── XyecocMailApp.swift         # @main entry point
-│   ├── ContentView.swift           # AuthViewModel + Login / 2FA / logged-in views
-│   └── Core/
-│       ├── Models.swift            # Codable models + JSONValue + RequestPayload/ApiResponse
-│       ├── KeychainManager.swift   # token/email storage (replaces SecurePrefs)
-│       ├── Networking/
-│       │   └── ApiClient.swift     # URLSession port of ApiService.kt
-│       └── Repository/
-│           └── AuthRepository.swift# auth + 2FA flow
+├── project.yml                        # Спецификация XcodeGen → генерирует XyecocMail.xcodeproj
+├── .github/workflows/build-ios.yml    # CI: сборка неподписанного .ipa на macOS-раннерах
+├── .gitignore
+├── README.md                          # Этот файл
+└── Sources/
+    ├── XyecocMailApp.swift            # Точка входа приложения (@main)
+    ├── ContentView.swift              # Состояние авторизации: экраны логина / 2FA
+    ├── Core/
+    │   ├── Models.swift                # Codable-модели: JSONValue, RequestPayload, ApiResponse,
+    │   │                                # MailItem, Folder, Tag, Attachment и т.д.
+    │   ├── KeychainManager.swift        # Хранение токена и email в Keychain (аналог SecurePrefs)
+    │   ├── Networking/
+    │   │   └── ApiClient.swift          # URLSession-клиент JSON-RPC (порт ApiService.kt)
+    │   ├── Local/
+    │   │   └── MailDatabase.swift       # Офлайн-кэш (actor + JSON-снапшот на диске)
+    │   ├── Repository/
+    │   │   ├── AuthRepository.swift     # Авторизация, регистрация, 2FA, восстановление пароля
+    │   │   └── MailRepository.swift     # Список писем, пагинация, действия над письмами
+    │   └── Util/
+    │       └── Formatters.swift         # Форматирование дат и размеров файлов
+    └── Features/
+        ├── Inbox/
+        │   └── InboxView.swift          # Экран списка писем (папки, поиск, свайпы)
+        └── Reader/
+            └── MailReaderView.swift     # Экран чтения письма (WKWebView + вложения)
 ```
 
-`XyecocMail.xcodeproj` and `Generated/` are **not committed** — XcodeGen
-regenerates them (locally and in CI) so there's no fragile `.pbxproj` to merge.
+**Важно:** папки `XyecocMail.xcodeproj/` и `Generated/` **не хранятся в
+репозитории** — они каждый раз генерируются заново утилитой XcodeGen (и
+локально, и в CI) на основе `project.yml`. Это избавляет от необходимости
+мержить громоздкий и конфликтующий файл `.pbxproj` при совместной работе.
 
-## Zero third-party dependencies
+---
 
-The foundation uses only `Foundation`, `Security`, and `SwiftUI`. Nothing to
-resolve — it builds as-is. (Socket.IO, GRDB, etc. arrive with the inbox layer.)
+## 3. Сборка `.ipa` через GitHub Actions (CI/CD)
 
-## Build the `.ipa` (CI — the "push and download" path)
+Это основной и самый простой способ получить `.ipa`-файл, если у вас нет
+Mac под рукой — сборка полностью происходит в облаке на виртуальной машине
+с macOS.
 
-1. Create a fresh GitHub repo and push this tree to it.
-2. The `build-ios` workflow runs automatically on push (or trigger it from the
-   **Actions** tab → *build-ios* → *Run workflow*).
-3. When it finishes, download the **`XyecocMail-unsigned`** artifact — that's your
-   unsigned `.ipa`.
-4. Sign + install it with **Sideloadly** or **AltStore** (they apply your Apple ID
-   signature on-device). See the free-account limits (7-day expiry, 3-app cap) in
-   the project notes.
+### Шаг 1 — Загрузите код в свой репозиторий на GitHub
 
-## Build locally (optional, needs a Mac + Xcode)
+Если вы ещё не создали репозиторий на GitHub, создайте новый (публичный или
+приватный — не важно), затем из папки проекта:
 
 ```bash
-brew install xcodegen
-xcodegen generate
-open XyecocMail.xcodeproj   # ⌘R to run in the Simulator
+git add -A
+git commit -m "iOS-порт Xyecoc Mail"
+git remote add origin https://github.com/<ваш-логин>/<название-репозитория>.git
+git push -u origin main
 ```
 
-## Test authentication against the live backend
+Если репозиторий уже подключён (`git remote -v` покажет `origin`), достаточно
+закоммитить изменения и выполнить `git push`.
 
-Run the app, enter a mailbox name (it auto-appends `@xyecoc.com`) and password:
+### Шаг 2 — Запустите workflow `build-ios`
 
-- **status == 1** → token saved to Keychain, "Авторизация успешна" screen.
-- **status == 2** → routed to the 2FA screen (`account/2fa-check`).
-- error → the backend `message` is shown inline.
+Workflow, описанный в [`.github/workflows/build-ios.yml`](.github/workflows/build-ios.yml),
+запускается **автоматически при каждом `push`** в репозиторий. Также его можно
+запустить вручную:
 
-The `#if DEBUG` logging in `ApiClient` prints every request/response to the
-Xcode console so you can watch the RPC round-trip.
+1. Откройте ваш репозиторий на GitHub.
+2. Перейдите во вкладку **Actions**.
+3. В списке слева выберите workflow **build-ios**.
+4. Нажмите кнопку **Run workflow** → **Run workflow** (запуск на текущей ветке).
 
-## Next milestones
+Сборка занимает обычно несколько минут: раннер `macos-14` устанавливает
+Xcode, генерирует `.xcodeproj` через `xcodegen`, собирает `Release`-архив
+**без подписи** (`CODE_SIGNING_ALLOWED=NO`) и упаковывает его в `.ipa`.
 
-1. Inbox — GRDB cache (Room parity) + `mail/default` paging & folder sync.
-2. Reader — `WKWebView` + `fetchMailBodyHtml` (already implemented in `ApiClient`).
-3. Compose/send — `message-new` with base64 attachments.
-4. Realtime — `socket.io-client-swift` (foreground only on iOS).
-5. Settings/Support — profile, 2FA setup, folders/tags/filters/aliases.
+### Шаг 3 — Скачайте готовый артефакт
+
+1. Когда запуск workflow завершится (зелёная галочка), откройте его страницу.
+2. В самом низу страницы будет раздел **Artifacts**.
+3. Скачайте архив **`XyecocMail-unsigned`** — внутри него лежит файл
+   **`XyecocMail-unsigned.ipa`**.
+
+Этот `.ipa` **не подписан** — его нельзя установить напрямую, нужен ещё один
+шаг: подпись вашим Apple ID через Sideloadly или AltStore.
+
+---
+
+## 4. Установка на iPhone через Sideloadly / AltStore
+
+Оба инструмента подписывают неподписанный `.ipa` **вашим личным Apple ID**
+(бесплатным или платным) и устанавливают приложение на телефон в обход
+App Store.
+
+### Вариант A — Sideloadly (Windows / macOS, разовая установка по кабелю)
+
+1. Скачайте и установите [Sideloadly](https://sideloadly.io/) на компьютер.
+2. Установите **iTunes** (Windows) или убедитесь, что на Mac установлен Xcode
+   / Apple Mobile Device Support — Sideloadly использует его для связи с
+   телефоном.
+3. Подключите iPhone к компьютеру кабелем и разблокируйте его (доверьте
+   компьютеру при запросе «Trust This Computer?»).
+4. Откройте Sideloadly, перетащите скачанный **`XyecocMail-unsigned.ipa`** в
+   окно программы.
+5. В поле **Apple ID** введите email вашей учётной записи Apple (той же, что
+   привязана к вашему iPhone) — используется только для подписи, вводится
+   локально.
+6. **(Опционально) Смените Bundle ID.** По умолчанию в проекте задан
+   `com.xyecoc.mail` (см. `project.yml`, ключ `PRODUCT_BUNDLE_IDENTIFIER`).
+   Если с этим Apple ID уже устанавливалось приложение с таким же Bundle ID
+   (например, вы переустанавливаете после истечения срока — см. ниже), либо
+   если вы хотите избежать конфликта, нажмите на значок карандаша рядом с
+   полем Bundle ID в Sideloadly и задайте уникальный, например
+   `com.xyecoc.mail.дата` или `com.<ваш-ник>.xyecocmail`.
+7. Нажмите **Start**. Sideloadly подпишет `.ipa` и установит его на телефон.
+8. На iPhone: **Настройки → Основные → VPN и управление устройством** →
+   выберите профиль разработчика (с вашим Apple ID) → **Доверять**.
+9. Запустите приложение с домашнего экрана.
+
+### Вариант B — AltStore (автоматическое обновление подписи по Wi-Fi)
+
+AltStore устанавливает на телефон вспомогательное приложение **AltStore**,
+которое умеет само переподписывать другие приложения, пока компьютер
+(с запущенным **AltServer**) находится в той же Wi-Fi-сети.
+
+1. Установите **AltServer** на компьютер: [altstore.io](https://altstore.io/).
+2. Подключите iPhone кабелем один раз, через AltServer установите **AltStore**
+   на телефон (значок появится на домашнем экране).
+3. На iPhone: **Настройки → Основные → VPN и управление устройством** →
+   доверьте профиль разработчика.
+4. Скопируйте `XyecocMail-unsigned.ipa` на телефон (например, через AirDrop,
+   Файлы/iCloud Drive, или откройте файл прямо в приложении AltStore, если
+   оно поддерживает импорт).
+5. В приложении **AltStore** на iPhone: вкладка **My Apps** → **+** в правом
+   верхнем углу → выберите `.ipa`-файл.
+6. AltStore подпишет и установит приложение. Для автообновления подписи по
+   истечении срока держите AltServer запущенным на компьютере в той же сети
+   (или используйте платную функцию AltServer «Mail Relay» / Wi-Fi-фон, если
+   доступна) — тогда AltStore будет переподписывать приложение автоматически
+   каждые несколько дней.
+
+### ⚠️ Ограничения бесплатного Apple ID
+
+Если вы используете **бесплатный** Apple ID (без платной подписки Apple
+Developer Program за $99/год), учтите следующие ограничения:
+
+| Ограничение | Детали |
+|---|---|
+| **Срок действия сертификата — 7 дней** | Через 7 дней после установки приложение перестанет запускаться («Unable to Verify App» / «Untrusted Developer»). Нужно переустановить `.ipa` заново (Sideloadly — вручную по кабелю; AltStore — автоматически по Wi-Fi, если AltServer запущен). Платный Developer-аккаунт продлевает срок до **1 года**. |
+| **Максимум 3 приложения одновременно** | На один бесплатный Apple ID можно установить не более 3 сайдлоаднутых приложений разом. Если лимит исчерпан — удалите одно из старых через Sideloadly/AltStore или прямо на телефоне. |
+| **Лимит 10 App ID в неделю** | Apple ограничивает создание новых App ID (по сути — Bundle ID) до 10 в неделю на один аккаунт разработчика. Частая смена Bundle ID при переустановках может исчерпать лимит — старайтесь переиспользовать один и тот же Bundle ID. |
+| **Возможные проблемы с Keychain** | Если Bundle ID или команда подписи (Team ID) меняются между переустановками, iOS может считать это «новым» приложением и очистить его Keychain-данные — в приложении это означает разлогин (токен авторизации хранится в Keychain, см. `KeychainManager.swift`). Старайтесь не менять Bundle ID без необходимости, чтобы не терять сессию. |
+| **Push-уведомления недоступны** | Бесплатный аккаунт не может получить capability Push Notifications, поэтому приложение работает только в режиме foreground-обновлений (см. заметки о фоновом выполнении в истории разработки проекта). |
+
+---
+
+## 5. Локальная разработка (на Mac)
+
+Если у вас есть Mac с установленным **Xcode**, вы можете собирать и запускать
+проект локально — это удобнее для разработки и отладки, чем ждать сборку в CI.
+
+### Требования
+
+- macOS с установленным **Xcode** (последняя стабильная версия).
+- [Homebrew](https://brew.sh/) для установки XcodeGen.
+
+### Шаги
+
+```bash
+# 1. Установите XcodeGen (один раз)
+brew install xcodegen
+
+# 2. Из корня репозитория сгенерируйте Xcode-проект
+xcodegen generate
+
+# 3. Откройте проект в Xcode
+open XyecocMail.xcodeproj
+```
+
+В Xcode:
+
+1. Выберите таргет **XyecocMail** и симулятор iPhone (или подключённое
+   устройство) в верхней панели.
+2. Нажмите **⌘R** (Run), чтобы собрать и запустить приложение.
+3. Для установки на **реальное устройство через Xcode** потребуется зайти под
+   своим Apple ID в **Xcode → Settings → Accounts** и выбрать команду подписи
+   (Team) в настройках таргета — Xcode подпишет и установит приложение
+   напрямую, без Sideloadly/AltStore.
+
+### Проверка авторизации
+
+Запустите приложение, введите имя почтового ящика (при отсутствии `@` к нему
+автоматически добавится `@xyecoc.com`) и пароль:
+
+- **status == 1** → токен сохраняется в Keychain, происходит переход к списку
+  входящих писем.
+- **status == 2** → показывается экран ввода кода 2FA (`account/2fa-check`).
+- ошибка → сообщение от сервера (`message`) отображается прямо на экране.
+
+В `ApiClient.swift` включено `#if DEBUG`-логирование — каждый запрос и ответ
+JSON-RPC печатается в консоль Xcode, что удобно для отладки взаимодействия
+с бэкендом.
+
+**Регенерация проекта:** если вы добавляете новые файлы в `Sources/` или
+меняете `project.yml`, повторно запустите `xcodegen generate` — Xcode-проект
+пересоздастся с учётом изменений (сам `.xcodeproj` не хранится в Git, поэтому
+конфликтов при этом не возникает).
