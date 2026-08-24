@@ -41,8 +41,14 @@ final class ReaderViewModel: ObservableObject {
         let trimmed = quickReplyText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, let mail = details else { return false }
 
-        let recipient = (mail.fromEmail?.isEmpty == false) ? mail.fromEmail! : mail.sender
-        guard !recipient.isEmpty else {
+        let rawRecipient: String = {
+            if let from = mail.fromEmail, !from.isEmpty {
+                return from
+            }
+            return mail.sender ?? ""
+        }()
+
+        guard !rawRecipient.isEmpty else {
             errorMessage = "Не удалось определить адрес получателя"
             return false
         }
@@ -62,7 +68,7 @@ final class ReaderViewModel: ObservableObject {
         }
 
         let resp = await repo.sendMail(
-            recipients: [recipient],
+            recipients: [rawRecipient],
             subject: replySubject,
             messageHtml: fullMessage,
             attachments: [],

@@ -266,7 +266,7 @@ struct InboxView: View {
     private func makeReplySeed(for mail: MailItem) -> ComposeSeed {
         let subject = mail.displaySubject()
         let reSubject = subject.lowercased().hasPrefix("re:") ? subject : "Re: \(subject)"
-        let recipient = mail.fromEmail.isEmpty ? mail.sender : mail.fromEmail
+        let recipient = mail.fromEmail.isEmpty ? (mail.sender) : mail.fromEmail
         return ComposeSeed(to: recipient, subject: reSubject, body: "")
     }
 
@@ -403,5 +403,114 @@ struct InboxView: View {
             }
         }
         .padding()
+    }
+}
+
+// MARK: - Shared Views
+
+struct AccountSwitcherView: View {
+    @ObservedObject var accounts: AccountStore
+    @Environment(\.dismiss) private var dismiss
+    @AppStorage("app_theme") private var selectedTheme: AppTheme = .cyan
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section("Аккаунты (\(accounts.emails.count)/\(AccountStore.maxAccounts))") {
+                    ForEach(accounts.emails, id: \.self) { email in
+                        Button {
+                            Haptics.light()
+                            Task { await accounts.setActive(email); dismiss() }
+                        } label: {
+                            HStack(spacing: 12) {
+                                Text(String(email.first.map { String($0).uppercased() } ?? "?"))
+                                    .font(.subheadline.bold()).foregroundStyle(.white)
+                                    .frame(width: 34, height: 34)
+                                    .background(Color.accentColor, in: Circle())
+                                Text(email).foregroundStyle(.primary).lineLimit(1)
+                                Spacer()
+                                if email == accounts.activeEmail {
+                                    Image(systemName: "checkmark.circle.fill").foregroundStyle(Color.accentColor)
+                                }
+                            }
+                        }
+                        .swipeActions {
+                            Button(role: .destructive) {
+                                Haptics.warning()
+                                Task { await accounts.remove(email) }
+                            } label: { Label("Удалить", systemImage: "trash") }
+                        }
+                    }
+                }
+
+                Section("Оформление") {
+                    Picker("Цвет приложения", selection: $selectedTheme) {
+                        ForEach(AppTheme.allCases) { theme in
+                            HStack {
+                                Circle()
+                                    .fill(theme.color)
+                                    .frame(width: 14, height: 14)
+                                Text(theme.title)
+                            }
+                            .tag(theme)
+                        }
+                    }
+                    .onChange(of: selectedTheme) { _ in
+                        Haptics.light()
+                    }
+                }
+
+                Section {
+                    NavigationLink {
+                        AddAccountView(accounts: accounts)
+                    } label: {
+                        Label("Добавить аккаунт", systemImage: "plus.circle")
+                    }
+                    .disabled(!accounts.canAddAccount)
+
+                    Button(role: .destructive) {
+                        Haptics.warning()
+                        Task { await accounts.logoutActive() }
+                    } label: {
+                        Label("Выйти из текущего", systemImage: "rectangle.portrait.and.arrow.right")
+                    }
+                }
+            }
+            .navigationTitle("Почтовые ящики")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Готово") {
+                        Haptics.light()
+                        dismiss()
+                    }
+                }
+            }
+        }
+    }
+}
+
+struct AddAccountView: View {
+    @ObservedObject var accounts: AccountStore
+
+    var body: some View {
+        LoginFlowView { await accounts.onLoggedIn() }
+            .navigationTitle("Новый аккаунт")
+            .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+struct TagBadge: View {
+    let name: String
+    let colorHex: String?
+
+    var body: some View {
+        let color = Color(hex: colorHex) ?? .gray
+        Text(name)
+            .font(.caption2).fontWeight(.medium)
+            .padding(.horizontal, 8).padding(.vertical, 2)
+            .background(color.opacity(0.18))
+            .foregroundStyle(color)
+            .clipShape(Capsule())
     }
 }
