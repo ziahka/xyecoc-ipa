@@ -223,7 +223,7 @@ struct InboxView: View {
                 .font(.title2.weight(.semibold))
                 .foregroundStyle(.white)
                 .frame(width: 58, height: 58)
-                .background(Color.brand, in: Circle())
+                .background(Color.accentColor, in: Circle())
                 .shadow(color: .black.opacity(0.2), radius: 8, y: 4)
         }
         .padding(20)
@@ -235,7 +235,7 @@ struct InboxView: View {
                 .font(.caption.bold())
                 .foregroundStyle(.white)
                 .frame(width: 30, height: 30)
-                .background(Color.brand, in: Circle())
+                .background(Color.accentColor, in: Circle())
         }
     }
 
@@ -272,8 +272,8 @@ struct InboxView: View {
                 Text(title).font(.subheadline)
             }
             .padding(.horizontal, 14).padding(.vertical, 7)
-            .background(active ? Color.brand.opacity(0.2) : Color.secondary.opacity(0.12))
-            .foregroundStyle(active ? Color.brand : Color.primary)
+            .background(active ? Color.accentColor.opacity(0.2) : Color.secondary.opacity(0.12))
+            .foregroundStyle(active ? Color.accentColor : Color.primary)
             .clipShape(Capsule())
         }
         .buttonStyle(.plain)
@@ -332,10 +332,25 @@ struct InboxView: View {
 struct AccountSwitcherView: View {
     @ObservedObject var accounts: AccountStore
     @Environment(\.dismiss) private var dismiss
+    @AppStorage("app_theme") private var selectedTheme: AppTheme = .cyan
 
     var body: some View {
         NavigationStack {
             List {
+                Section("Оформление") {
+                    Picker("Цвет акцента", selection: $selectedTheme) {
+                        ForEach(AppTheme.allCases) { theme in
+                            HStack {
+                                Circle()
+                                    .fill(theme.color)
+                                    .frame(width: 14, height: 14)
+                                Text(theme.title)
+                            }
+                            .tag(theme)
+                        }
+                    }
+                }
+
                 Section("Аккаунты (\(accounts.emails.count)/\(AccountStore.maxAccounts))") {
                     ForEach(accounts.emails, id: \.self) { email in
                         Button {
@@ -345,11 +360,11 @@ struct AccountSwitcherView: View {
                                 Text(String(email.first.map { String($0).uppercased() } ?? "?"))
                                     .font(.subheadline.bold()).foregroundStyle(.white)
                                     .frame(width: 34, height: 34)
-                                    .background(Color.brand, in: Circle())
+                                    .background(Color.accentColor, in: Circle())
                                 Text(email).foregroundStyle(.primary).lineLimit(1)
                                 Spacer()
                                 if email == accounts.activeEmail {
-                                    Image(systemName: "checkmark.circle.fill").foregroundStyle(Color.brand)
+                                    Image(systemName: "checkmark.circle.fill").foregroundStyle(Color.accentColor)
                                 }
                             }
                         }
@@ -409,7 +424,7 @@ struct MailRow: View {
         HStack(alignment: .top, spacing: 12) {
             ZStack {
                 Circle()
-                    .fill(mail.read ? Color.secondary.opacity(0.3) : Color.brand)
+                    .fill(mail.read ? Color.secondary.opacity(0.3) : Color.accentColor)
                     .frame(width: 44, height: 44)
                 Text(avatarLetter).font(.headline).foregroundStyle(.white)
             }
@@ -424,7 +439,7 @@ struct MailRow: View {
                     Text(DateUtils.formatDate(mail.createdAt))
                         .font(.caption).foregroundStyle(.secondary)
                     if !mail.read {
-                        Circle().fill(Color.brand).frame(width: 8, height: 8)
+                        Circle().fill(Color.accentColor).frame(width: 8, height: 8)
                     }
                 }
                 Text(mail.displaySubject())
