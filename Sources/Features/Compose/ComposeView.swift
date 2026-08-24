@@ -91,6 +91,7 @@ struct ComposeView: View {
 
     private let senderEmail = KeychainManager.shared.getEmail() ?? ""
     @State private var selectedSender: String
+    private let bottomMarkerID = "bottomID"
 
     init(seed: ComposeSeed = ComposeSeed()) {
         _to = State(initialValue: seed.to)
@@ -102,22 +103,34 @@ struct ComposeView: View {
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
-                    if !vm.aliases.isEmpty { senderPicker }
-                    field(title: "Кому", systemImage: "at", text: $to,
-                          placeholder: "email@example.com (через запятую)")
-                    field(title: "Тема", systemImage: "text.alignleft", text: $subject,
-                          placeholder: "Тема письма")
-                    formattingBar
-                    bodyEditor
-                    if !vm.signature.isEmpty { signaturePreview }
-                    attachmentButtons
-                    if !attachments.isEmpty { attachmentList }
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 14) {
+                        if !vm.aliases.isEmpty { senderPicker }
+                        field(title: "Кому", systemImage: "at", text: $to,
+                              placeholder: "email@example.com (через запятую)")
+                        field(title: "Тема", systemImage: "text.alignleft", text: $subject,
+                              placeholder: "Тема письма")
+                        formattingBar
+                        bodyEditor
+                        if !vm.signature.isEmpty { signaturePreview }
+                        attachmentButtons
+                        if !attachments.isEmpty { attachmentList }
+
+                        // невидимый маркер для автоскролла вниз при вводе
+                        Color.clear
+                            .frame(height: 1)
+                            .id(bottomMarkerID)
+                    }
+                    .padding(16)
                 }
-                .padding(16)
+                .scrollDismissesKeyboard(.interactively)
+                .onChange(of: bodyText) { _ in
+                    withAnimation(.easeOut(duration: 0.15)) {
+                        proxy.scrollTo(bottomMarkerID, anchor: .bottom)
+                    }
+                }
             }
-            .scrollDismissesKeyboard(.interactively)
             .background(Color(.systemGroupedBackground))
             .navigationTitle(replyMode ? "Ответ на письмо" : "Новое письмо")
             .navigationBarTitleDisplayMode(.inline)
