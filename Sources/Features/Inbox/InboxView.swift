@@ -168,19 +168,31 @@ struct InboxView: View {
                 }
                 .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 12))
                 .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                    Button(role: .destructive) { vm.delete(mail) } label: {
+                    Button(role: .destructive) {
+                        Haptics.warning()
+                        vm.delete(mail)
+                    } label: {
                         Label("Удалить", systemImage: "trash")
                     }
-                    Button { vm.moveToSpam(mail) } label: {
+                    Button {
+                        Haptics.medium()
+                        vm.moveToSpam(mail)
+                    } label: {
                         Label("Спам", systemImage: "exclamationmark.octagon")
                     }.tint(.orange)
                 }
                 .swipeActions(edge: .leading, allowsFullSwipe: true) {
-                    Button { vm.setRead(mail, !mail.read) } label: {
+                    Button {
+                        Haptics.light()
+                        vm.setRead(mail, !mail.read)
+                    } label: {
                         Label(mail.read ? "Не прочитано" : "Прочитано",
                               systemImage: mail.read ? "envelope.badge" : "envelope.open")
                     }.tint(.blue)
-                    Button { vm.toggleStar(mail) } label: {
+                    Button {
+                        Haptics.light()
+                        vm.toggleStar(mail)
+                    } label: {
                         Label("Важное", systemImage: "star")
                     }.tint(.yellow)
                 }
@@ -218,7 +230,10 @@ struct InboxView: View {
     // MARK: - Compose FAB
 
     private var composeButton: some View {
-        Button { showCompose = true } label: {
+        Button {
+            Haptics.light()
+            showCompose = true
+        } label: {
             Image(systemName: "square.and.pencil")
                 .font(.title2.weight(.semibold))
                 .foregroundStyle(.white)
@@ -230,7 +245,10 @@ struct InboxView: View {
     }
 
     private var accountButton: some View {
-        Button { showAccounts = true } label: {
+        Button {
+            Haptics.light()
+            showAccounts = true
+        } label: {
             Text(activeInitial)
                 .font(.caption.bold())
                 .foregroundStyle(.white)
@@ -245,18 +263,23 @@ struct InboxView: View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
                 chip("Входящие", active: vm.currentFolder == "inbox" && !vm.filterUnreadOnly) {
+                    Haptics.light()
                     vm.filterUnreadOnly = false; vm.selectFolder("inbox")
                 }
                 chip("Непрочитанные", active: vm.filterUnreadOnly) {
+                    Haptics.light()
                     vm.filterUnreadOnly.toggle()
                 }
                 chip("Важные", active: vm.currentFolder == "important") {
+                    Haptics.light()
                     vm.selectFolder("important")
                 }
                 chip("Отправленные", active: vm.currentFolder == "sent") {
+                    Haptics.light()
                     vm.selectFolder("sent")
                 }
                 chip("Корзина", active: vm.currentFolder == "trash") {
+                    Haptics.light()
                     vm.selectFolder("trash")
                 }
             }
@@ -283,13 +306,19 @@ struct InboxView: View {
         Menu {
             Section("Папки") {
                 ForEach(systemFolders) { f in
-                    Button { vm.selectFolder(f.id) } label: { Label(f.title, systemImage: f.icon) }
+                    Button {
+                        Haptics.light()
+                        vm.selectFolder(f.id)
+                    } label: { Label(f.title, systemImage: f.icon) }
                 }
             }
             if !vm.folders.isEmpty {
                 Section("Мои папки") {
                     ForEach(vm.folders) { f in
-                        Button { vm.selectFolder(f.name) } label: { Label(f.name, systemImage: "folder") }
+                        Button {
+                            Haptics.light()
+                            vm.selectFolder(f.name)
+                        } label: { Label(f.name, systemImage: "folder") }
                     }
                 }
             }
@@ -300,11 +329,19 @@ struct InboxView: View {
 
     private var overflowMenu: some View {
         Menu {
-            Button { vm.markAllRead() } label: {
+            Button {
+                Haptics.medium()
+                vm.markAllRead()
+            } label: {
                 Label("Прочитать все", systemImage: "envelope.open")
             }
-            Toggle(isOn: Binding(get: { vm.filterUnreadOnly },
-                                 set: { vm.filterUnreadOnly = $0 })) {
+            Toggle(isOn: Binding(
+                get: { vm.filterUnreadOnly },
+                set: {
+                    Haptics.light()
+                    vm.filterUnreadOnly = $0
+                }
+            )) {
                 Label("Только непрочитанные", systemImage: "envelope.badge")
             }
         } label: {
@@ -319,7 +356,10 @@ struct InboxView: View {
                 .foregroundStyle(.secondary)
             Text(vm.filterUnreadOnly ? "Нет непрочитанных писем" : "В этой папке нет писем")
                 .foregroundStyle(.secondary)
-            Button { Task { await vm.refresh() } } label: {
+            Button {
+                Haptics.light()
+                Task { await vm.refresh() }
+            } label: {
                 Label("Обновить", systemImage: "arrow.clockwise")
             }
         }
@@ -340,6 +380,7 @@ struct AccountSwitcherView: View {
                 Section("Аккаунты (\(accounts.emails.count)/\(AccountStore.maxAccounts))") {
                     ForEach(accounts.emails, id: \.self) { email in
                         Button {
+                            Haptics.light()
                             Task { await accounts.setActive(email); dismiss() }
                         } label: {
                             HStack(spacing: 12) {
@@ -356,6 +397,7 @@ struct AccountSwitcherView: View {
                         }
                         .swipeActions {
                             Button(role: .destructive) {
+                                Haptics.warning()
                                 Task { await accounts.remove(email) }
                             } label: { Label("Удалить", systemImage: "trash") }
                         }
@@ -374,6 +416,9 @@ struct AccountSwitcherView: View {
                             .tag(theme)
                         }
                     }
+                    .onChange(of: selectedTheme) { _ in
+                        Haptics.light()
+                    }
                 }
 
                 Section {
@@ -385,6 +430,7 @@ struct AccountSwitcherView: View {
                     .disabled(!accounts.canAddAccount)
 
                     Button(role: .destructive) {
+                        Haptics.warning()
                         Task { await accounts.logoutActive() }
                     } label: {
                         Label("Выйти из текущего", systemImage: "rectangle.portrait.and.arrow.right")
@@ -394,7 +440,12 @@ struct AccountSwitcherView: View {
             .navigationTitle("Почтовые ящики")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .confirmationAction) { Button("Готово") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Готово") {
+                        Haptics.light()
+                        dismiss()
+                    }
+                }
             }
         }
     }
@@ -409,7 +460,6 @@ struct AddAccountView: View {
             .navigationBarTitleDisplayMode(.inline)
     }
 }
-
 
 struct TagBadge: View {
     let name: String

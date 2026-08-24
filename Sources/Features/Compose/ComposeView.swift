@@ -336,16 +336,32 @@ struct ComposeView: View {
     // MARK: - Actions
 
     private func sendMessage() async {
-        if to.isEmpty { errorText = "Укажите хотя бы одного получателя"; return }
+        if to.isEmpty {
+            Haptics.error()
+            errorText = "Укажите хотя бы одного получателя"
+            return
+        }
         let error = await vm.send(recipients: to, subject: subject, body: bodyText,
-                                  attachments: attachments, isDraft: false)
-        if error == nil { dismiss() } else { showSendDisabled = true }
+                                attachments: attachments, isDraft: false)
+        if error == nil {
+            Haptics.success()
+            dismiss()
+        } else {
+            Haptics.error()
+            showSendDisabled = true
+        }
     }
 
     private func saveDraft() async {
         let error = await vm.send(recipients: to, subject: subject, body: bodyText,
-                                  attachments: attachments, isDraft: true)
-        if error == nil { dismiss() } else { errorText = error }
+                                attachments: attachments, isDraft: true)
+        if error == nil {
+            Haptics.light()
+            dismiss()
+        } else {
+            Haptics.error()
+            errorText = error
+        }
     }
 
     private func loadSelectedPhotos() {
