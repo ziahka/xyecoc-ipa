@@ -4,7 +4,7 @@
 
 **A native, lightweight, and modern iOS mail client for xyecoc.com built with SwiftUI.**
 
-[English](#-about-the-project) | [Русская версия](assets/ru_readme.md) | [📚 Wiki Documentation](https://github.com/ziahka/xyecoc-ipa/wiki)
+[English](#-about-the-project) | [Русская версия](assets/ru_readme.md) | [📚 Wiki Documentation](https://github.com/ziahka/xyecoc-ipa/wiki) | [VirusTotal]()
 
 ---
 
