@@ -126,6 +126,8 @@ let systemFolders: [SystemFolder] = [
 
 // MARK: - Screen
 
+@State private var showSettings = false
+
 struct InboxView: View {
     @ObservedObject var accounts: AccountStore
     @StateObject private var vm = InboxViewModel()
@@ -261,6 +263,9 @@ struct InboxView: View {
         .sheet(isPresented: $showAccounts) {
             AccountSwitcherView(accounts: accounts)
         }
+        .sheet(isPresented: $showSettings) {
+            SettingsView(accounts: accounts)
+        }
     }
 
     private func makeReplySeed(for mail: MailItem) -> ComposeSeed {
@@ -286,9 +291,19 @@ struct InboxView: View {
     }
 
     private var accountButton: some View {
-        Button {
-            Haptics.light()
-            showAccounts = true
+        Menu {
+            Button {
+                Haptics.light()
+                showAccounts = true
+            } label: {
+                Label("Управление аккаунтами", systemImage: "person.2")
+            }
+
+            Button {
+                showSettings = true
+            } label: {
+                Label("Настройки", systemImage: "gearshape")
+            }
         } label: {
             Text(activeInitial)
                 .font(.caption.bold())
