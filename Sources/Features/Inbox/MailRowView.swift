@@ -1,57 +1,48 @@
-//
-//  MailRow.swift
-//  XyecocMail
-//
-
 import SwiftUI
 
-struct MailRow: View {
-    let mail: MailItem
-
-    private var avatarLetter: String {
-        guard let c = mail.displayName().first else { return "?" }
-        return String(c).uppercased()
-    }
+struct MailRowView: View {
+    let state: MailRowState
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
             ZStack {
                 Circle()
-                    .fill(mail.read ? Color.secondary.opacity(0.3) : Color.accentColor)
+                    .fill(state.isRead ? state.avatarBgColor.opacity(0.35) : state.avatarBgColor)
                     .frame(width: 44, height: 44)
-                Text(avatarLetter)
-                    .font(.headline)
+
+                Text(state.avatarInitials)
+                    .font(.system(size: 15, weight: .bold, design: .rounded))
                     .foregroundStyle(.white)
             }
 
             VStack(alignment: .leading, spacing: 3) {
                 HStack {
-                    Text(mail.displayName())
+                    Text(state.sender)
                         .font(.subheadline)
-                        .fontWeight(mail.read ? .regular : .bold)
+                        .fontWeight(state.isRead ? .regular : .bold)
                         .lineLimit(1)
 
                     Spacer()
 
-                    Text(DateUtils.formatDate(mail.createdAt))
+                    Text(state.formattedDate)
                         .font(.caption)
                         .foregroundStyle(.secondary)
 
-                    if !mail.read {
+                    if !state.isRead {
                         Circle()
                             .fill(Color.accentColor)
                             .frame(width: 8, height: 8)
                     }
                 }
 
-                Text(mail.displaySubject())
+                Text(state.subject)
                     .font(.subheadline)
-                    .fontWeight(mail.read ? .regular : .semibold)
+                    .fontWeight(state.isRead ? .regular : .semibold)
                     .lineLimit(1)
 
                 HStack(spacing: 6) {
-                    if !mail.snippet.isEmpty {
-                        Text(mail.snippet)
+                    if !state.snippet.isEmpty {
+                        Text(state.snippet)
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
@@ -59,21 +50,21 @@ struct MailRow: View {
 
                     Spacer()
 
-                    if mail.hasAttachments {
+                    if state.hasAttachments {
                         Image(systemName: "paperclip")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
 
-                    if mail.important {
+                    if state.isImportant {
                         Image(systemName: "star.fill")
                             .font(.caption2)
                             .foregroundStyle(.yellow)
                     }
                 }
 
-                if let tag = mail.tagName, !tag.isEmpty {
-                    TagBadge(name: tag, colorHex: mail.tagColor)
+                if let tag = state.tagName, !tag.isEmpty {
+                    TagBadge(name: tag, colorHex: state.tagColorHex)
                 }
             }
         }

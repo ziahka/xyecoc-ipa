@@ -178,6 +178,11 @@ struct InboxView: View {
     var body: some View {
         List(selection: $selectedIds) {
             ForEach(vm.displayedMails) { mail in
+                NavigationLink {
+                    MailReaderView(mailId: mail.id) { Task { await vm.reload() } }
+                } label: {
+                    MailRowView(state: MailRowState(mail: mail))
+                }
                 Group {
                     if isSelectionMode {
                         MailRow(mail: mail)
