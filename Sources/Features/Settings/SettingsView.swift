@@ -1,15 +1,8 @@
-//
-//  SettingsView.swift
-//  XyecocMail
-//
-//  Application settings view.
-//
-
 import SwiftUI
 
 struct SettingsView: View {
-    @AppStorage("app_theme") private var selectedTheme: AppTheme = .cyan[cite: 1]
-    @AppStorage("app_language") private var selectedLanguage: AppLanguage = .ru[cite: 1]
+    @AppStorage("app_theme") private var selectedTheme: AppTheme = .cyan
+    @AppStorage("app_language") private var selectedLanguage: AppLanguage = .ru
 
     @ObservedObject private var security = SecurityManager.shared
     @State private var showSetPinSheet = false
@@ -45,26 +38,26 @@ struct SettingsView: View {
             Section("Язык / Language") {
                 Picker("Язык интерфейса", selection: $selectedLanguage) {
                     ForEach(AppLanguage.allCases) { lang in
-                        Text(lang.title).tag(lang)[cite: 1]
+                        Text(lang.title).tag(lang)
                     }
                 }
-            }[cite: 1]
+            }
 
             Section("Внешний вид") {
                 Picker("Цвет акцента", selection: $selectedTheme) {
                     ForEach(AppTheme.allCases) { theme in
                         HStack {
                             Circle()
-                                .fill(theme.color)[cite: 1]
-                                .frame(width: 14, height: 14)[cite: 1]
-                            Text(theme.title)[cite: 1]
+                                .fill(theme.color)
+                                .frame(width: 14, height: 14)
+                            Text(theme.title)
                         }
-                        .tag(theme)[cite: 1]
+                        .tag(theme)
                     }
                 }
-            }[cite: 1]
+            }
         }
-        .navigationTitle("Настройки")[cite: 1]
+        .navigationTitle("Настройки")
         .sheet(isPresented: $showSetPinSheet) {
             pinSetupSheet
         }
@@ -129,11 +122,5 @@ struct SettingsView: View {
         confirmPin = ""
         pinStep = 0
         pinError = nil
-    }
-}
-
-#Preview {
-    NavigationStack {
-        SettingsView()[cite: 1]
     }
 }
