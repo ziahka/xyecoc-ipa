@@ -126,14 +126,13 @@ let systemFolders: [SystemFolder] = [
 
 // MARK: - Screen
 
-@State private var showSettings = false
-
 struct InboxView: View {
     @ObservedObject var accounts: AccountStore
     @StateObject private var vm = InboxViewModel()
 
     @State private var showCompose = false
     @State private var showAccounts = false
+    @State private var showSettings = false
     @State private var composeSeed: ComposeSeed?
 
     private var searchBinding: Binding<String> {
