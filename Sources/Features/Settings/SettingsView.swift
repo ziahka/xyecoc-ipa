@@ -125,8 +125,8 @@ struct SettingsView: View {
     @StateObject private var vm = SettingsViewModel()
     @ObservedObject private var security = SecurityManager.shared
 
-    @AppStorage("app_theme") private var selectedTheme: AppTheme = .cyan[cite: 1, 3]
-    @AppStorage("app_language") private var selectedLanguage: AppLanguage = .ru[cite: 3, 4]
+    @AppStorage("app_theme") private var selectedTheme: AppTheme = .cyan
+    @AppStorage("app_language") private var selectedLanguage: AppLanguage = .ru
 
     // Sheets & Dialogs
     @State private var showPasswordSheet = false
@@ -151,7 +151,7 @@ struct SettingsView: View {
             mailManagementSection
             appAndDestructiveSection
         }
-        .navigationTitle("Настройки")[cite: 3, 4]
+        .navigationTitle("Настройки")
         .task { await vm.load() }
         .sheet(isPresented: $showPasswordSheet) { ChangePasswordSheet(vm: vm) }
         .sheet(isPresented: $showReserveSheet) { ReserveEmailSheet(vm: vm) }
@@ -181,9 +181,9 @@ struct SettingsView: View {
             HStack(spacing: 14) {
                 ZStack {
                     Circle()
-                        .fill(AvatarGenerator.backgroundColor(for: vm.email))[cite: 5]
+                        .fill(AvatarGenerator.backgroundColor(for: vm.email))
                         .frame(width: 44, height: 44)
-                    Text(AvatarGenerator.initials(displayName: vm.email, email: vm.email))[cite: 5]
+                    Text(AvatarGenerator.initials(displayName: vm.email, email: vm.email))
                         .font(.headline.bold())
                         .foregroundStyle(.white)
                 }
@@ -238,16 +238,16 @@ struct SettingsView: View {
             Picker("Цвет темы", selection: $selectedTheme) {
                 ForEach(AppTheme.allCases) { theme in
                     HStack {
-                        Circle().fill(theme.color).frame(width: 14, height: 14)[cite: 1, 3]
-                        Text(theme.title)[cite: 1, 3]
+                        Circle().fill(theme.color).frame(width: 14, height: 14)
+                        Text(theme.title)
                     }
-                    .tag(theme)[cite: 1, 3]
+                    .tag(theme)
                 }
             }
 
             Picker("Язык интерфейса", selection: $selectedLanguage) {
                 ForEach(AppLanguage.allCases) { lang in
-                    Text(lang.title).tag(lang)[cite: 3, 4]
+                    Text(lang.title).tag(lang)
                 }
             }
         }
