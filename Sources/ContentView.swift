@@ -72,25 +72,47 @@ final class AuthViewModel: ObservableObject {
 
 struct ContentView: View {
     @StateObject private var accounts = AccountStore()
-    @AppStorage("app_theme") private var selectedTheme: AppTheme = .cyan
-    @AppStorage("app_language") private var selectedLanguage: AppLanguage = .ru
+    @ObservedObject private var security = SecurityManager.shared
+    @Environment(\.scenePhase) private var scenePhase
+
+    @AppStorage("app_theme") private var selectedTheme: AppTheme = .cyan[cite: 1, 3]
+    @AppStorage("app_language") private var selectedLanguage: AppLanguage = .ru[cite: 3]
 
     var body: some View {
-        Group {
-            if let active = accounts.activeEmail {
-                NavigationStack {
-                    InboxView(accounts: accounts)
+        ZStack {
+            Group {
+                if let active = accounts.activeEmail {
+                    NavigationStack {
+                        InboxView(accounts: accounts)[cite: 1, 3]
+                    }
+                    .id(active)[cite: 1, 3]
+                } else {
+                    LoginFlowView {
+                        await accounts.onLoggedIn()[cite: 3]
+                    }
                 }
-                .id(active)
-            } else {
-                LoginFlowView {
-                    await accounts.onLoggedIn()
+            }
+            .tint(selectedTheme.color)[cite: 3]
+            .environment(\.locale, selectedLanguage.locale)[cite: 3]
+            .task { await accounts.syncActiveCache() }[cite: 3]
+
+            if security.isLocked {
+                LockOverlayView {
+                    await accounts.logoutActive()
+                }
+                .transition(.opacity)
+                .zIndex(999)
+            }
+        }
+        .animation(.easeInOut(duration: 0.25), value: security.isLocked)
+        .onChange(of: scenePhase) { newPhase in
+            if newPhase == .active {
+                security.lockAppIfNeeded()
+                if security.isBiometryEnabled && security.isLocked {
+                    security.authenticateWithBiometry()
                 }
             }
         }
-        .tint(selectedTheme.color)
-        .environment(\.locale, selectedLanguage.locale)
-        .task { await accounts.syncActiveCache() }
     }
 }
 
