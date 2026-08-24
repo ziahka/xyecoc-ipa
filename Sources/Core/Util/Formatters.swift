@@ -74,30 +74,60 @@ extension Color {
 
 enum AppTheme: String, CaseIterable, Identifiable {
     case cyan = "cyan"
-    case blue = "blue"
-    case purple = "purple"
-    case green = "green"
-    case orange = "orange"
+    case ocean = "ocean"
+    case indigo = "indigo"
+    case lavender = "lavender"
+    case mint = "mint"
+    case emerald = "emerald"
+    case peach = "peach"
+    case terracotta = "terracotta"
+    case rose = "rose"
+    case slate = "slate"
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
-        case .cyan: return "Бирюзовый (бренд)"
-        case .blue: return "Синий"
-        case .purple: return "Фиолетовый"
-        case .green: return "Зеленый"
-        case .orange: return "Оранжевый"
+        case .cyan: return "Морская волна"
+        case .ocean: return "Океан"
+        case .indigo: return "Индиго"
+        case .lavender: return "Лаванда"
+        case .mint: return "Мята"
+        case .emerald: return "Изумруд"
+        case .peach: return "Персик"
+        case .terracotta: return "Терракота"
+        case .rose: return "Пудра"
+        case .slate: return "Графит"
         }
     }
 
     var color: Color {
         switch self {
         case .cyan: return Color(hex: "#18C9E1") ?? .cyan
-        case .blue: return .blue
-        case .purple: return .purple
-        case .green: return .green
-        case .orange: return .orange
+        case .ocean: return Color(hex: "#3B82F6") ?? .blue
+        case .indigo: return Color(hex: "#6366F1") ?? .indigo
+        case .lavender: return Color(hex: "#8B5CF6") ?? .purple
+        case .mint: return Color(hex: "#10B981") ?? .mint
+        case .emerald: return Color(hex: "#059669") ?? .green
+        case .peach: return Color(hex: "#F59E0B") ?? .orange
+        case .terracotta: return Color(hex: "#EA580C") ?? .orange
+        case .rose: return Color(hex: "#EC4899") ?? .pink
+        case .slate: return Color(hex: "#64748B") ?? .gray
+        }
+    }
+
+    var backgroundColor: Color {
+        switch self {
+        case .cyan: return Color(hex: "#E0F7FA") ?? .cyan.opacity(0.12)
+        case .ocean: return Color(hex: "#EFF6FF") ?? .blue.opacity(0.12)
+        case .indigo: return Color(hex: "#EEF2FF") ?? .indigo.opacity(0.12)
+        case .lavender: return Color(hex: "#F5F3FF") ?? .purple.opacity(0.12)
+        case .mint: return Color(hex: "#ECFDF5") ?? .mint.opacity(0.12)
+        case .emerald: return Color(hex: "#E6F4EA") ?? .green.opacity(0.12)
+        case .peach: return Color(hex: "#FFFBEB") ?? .orange.opacity(0.12)
+        case .terracotta: return Color(hex: "#FFF7ED") ?? .orange.opacity(0.12)
+        case .rose: return Color(hex: "#FDF2F8") ?? .pink.opacity(0.12)
+        case .slate: return Color(hex: "#F1F5F9") ?? .gray.opacity(0.12)
         }
     }
 }

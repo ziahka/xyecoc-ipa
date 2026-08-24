@@ -337,20 +337,6 @@ struct AccountSwitcherView: View {
     var body: some View {
         NavigationStack {
             List {
-                Section("Оформление") {
-                    Picker("Цвет акцента", selection: $selectedTheme) {
-                        ForEach(AppTheme.allCases) { theme in
-                            HStack {
-                                Circle()
-                                    .fill(theme.color)
-                                    .frame(width: 14, height: 14)
-                                Text(theme.title)
-                            }
-                            .tag(theme)
-                        }
-                    }
-                }
-
                 Section("Аккаунты (\(accounts.emails.count)/\(AccountStore.maxAccounts))") {
                     ForEach(accounts.emails, id: \.self) { email in
                         Button {
@@ -372,6 +358,20 @@ struct AccountSwitcherView: View {
                             Button(role: .destructive) {
                                 Task { await accounts.remove(email) }
                             } label: { Label("Удалить", systemImage: "trash") }
+                        }
+                    }
+                }
+
+                Section("Оформление") {
+                    Picker("Цвет приложения", selection: $selectedTheme) {
+                        ForEach(AppTheme.allCases) { theme in
+                            HStack {
+                                Circle()
+                                    .fill(theme.color)
+                                    .frame(width: 14, height: 14)
+                                Text(theme.title)
+                            }
+                            .tag(theme)
                         }
                     }
                 }
