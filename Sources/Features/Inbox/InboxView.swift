@@ -290,19 +290,9 @@ struct InboxView: View {
     }
 
     private var accountButton: some View {
-        Menu {
-            Button {
-                Haptics.light()
-                showAccounts = true
-            } label: {
-                Label("Управление аккаунтами", systemImage: "person.2")
-            }
-
-            Button {
-                showSettings = true
-            } label: {
-                Label("Настройки", systemImage: "gearshape")
-            }
+        Button {
+            Haptics.light()
+            showAccounts = true
         } label: {
             Text(activeInitial)
                 .font(.caption.bold())
@@ -425,80 +415,83 @@ struct InboxView: View {
 struct AccountSwitcherView: View {
     @ObservedObject var accounts: AccountStore
     @Environment(\.dismiss) private var dismiss
-    @AppStorage("app_theme") private var selectedTheme: AppTheme = .cyan
+    @State private var showSettings = false
+    @State private var showAddAccount = false
 
     var body: some View {
         NavigationStack {
             List {
-                Section("Аккаунты (\(accounts.emails.count)/\(AccountStore.maxAccounts))") {
+                Section("Почтовые ящики") {
                     ForEach(accounts.emails, id: \.self) { email in
-                        Button {
-                            Haptics.light()
-                            Task { await accounts.setActive(email); dismiss() }
-                        } label: {
-                            HStack(spacing: 12) {
-                                Text(String(email.first.map { String($0).uppercased() } ?? "?"))
-                                    .font(.subheadline.bold()).foregroundStyle(.white)
-                                    .frame(width: 34, height: 34)
-                                    .background(Color.accentColor, in: Circle())
-                                Text(email).foregroundStyle(.primary).lineLimit(1)
-                                Spacer()
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(email)
+                                    .font(.subheadline)
+                                    .fontWeight(email == accounts.activeEmail ? .bold : .regular)
                                 if email == accounts.activeEmail {
-                                    Image(systemName: "checkmark.circle.fill").foregroundStyle(Color.accentColor)
+                                    Text("Активен")
+                                        .font(.caption2)
+                                        .foregroundStyle(Color.accentColor)
                                 }
                             }
-                        }
-                        .swipeActions {
-                            Button(role: .destructive) {
-                                Haptics.warning()
-                                Task { await accounts.remove(email) }
-                            } label: { Label("Удалить", systemImage: "trash") }
-                        }
-                    }
-                }
-
-                Section("Оформление") {
-                    Picker("Цвет приложения", selection: $selectedTheme) {
-                        ForEach(AppTheme.allCases) { theme in
-                            HStack {
-                                Circle()
-                                    .fill(theme.color)
-                                    .frame(width: 14, height: 14)
-                                Text(theme.title)
+                            Spacer()
+                            if email == accounts.activeEmail {
+                                Image(systemName: "checkmark")
+                                    .foregroundStyle(Color.accentColor)
                             }
-                            .tag(theme)
+                        }
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            Task {
+                                await accounts.setActive(email)
+                                dismiss()
+                            }
+                        }
+                        .swipeActions(edge: .trailing) {
+                            Button(role: .destructive) {
+                                Task { await accounts.remove(email) }
+                            } label: {
+                                Label("Удалить", systemImage: "trash")
+                            }
                         }
                     }
-                    .onChange(of: selectedTheme) { _ in
-                        Haptics.light()
+
+                    Button {
+                        showAddAccount = true
+                    } label: {
+                        Label("Добавить аккаунт", systemImage: "plus")
                     }
                 }
 
                 Section {
-                    NavigationLink {
-                        AddAccountView(accounts: accounts)
+                    Button {
+                        showSettings = true
                     } label: {
-                        Label("Добавить аккаунт", systemImage: "plus.circle")
-                    }
-                    .disabled(!accounts.canAddAccount)
-
-                    Button(role: .destructive) {
-                        Haptics.warning()
-                        Task { await accounts.logoutActive() }
-                    } label: {
-                        Label("Выйти из текущего", systemImage: "rectangle.portrait.and.arrow.right")
+                        Label("Настройки приложения", systemImage: "gearshape")
                     }
                 }
             }
-            .navigationTitle("Почтовые ящики")
+            .navigationTitle("Учетные записи")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Готово") {
-                        Haptics.light()
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Закрыть") {
                         dismiss()
                     }
                 }
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        showSettings = true
+                    } label: {
+                        Image(systemName: "gearshape")
+                    }
+                }
+            }
+            .sheet(isPresented: $showSettings) {
+                SettingsView(accounts: accounts)
+            }
+            .sheet(isPresented: $showAddAccount) {
+                AddAccountView(accounts: accounts)
             }
         }
     }
