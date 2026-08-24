@@ -11,10 +11,6 @@
 
 import Foundation
 
-// MARK: - JSONValue (arbitrary JSON, replaces Gson's JsonElement / `Any?`)
-
-/// A fully Codable representation of any JSON value. Used for the dynamic
-/// `data`/`params` fields on requests and the `data` field on responses.
 enum JSONValue: Codable, Equatable {
     case string(String)
     case int(Int64)
@@ -50,8 +46,6 @@ enum JSONValue: Codable, Equatable {
         }
     }
 
-    // Convenience accessors ------------------------------------------------
-
     var stringValue: String? { if case .string(let s) = self { return s }; return nil }
     var intValue: Int64? {
         switch self {
@@ -67,15 +61,11 @@ enum JSONValue: Codable, Equatable {
         return nil
     }
 
-    /// Re-encode this value and decode it into a concrete `Decodable` type
-    /// (mirrors Gson's `fromJson(data, T::class.java)`).
     func decoded<T: Decodable>(_ type: T.Type = T.self) -> T? {
         guard let data = try? JSONEncoder().encode(self) else { return nil }
         return try? JSONDecoder().decode(T.self, from: data)
     }
 }
-
-// MARK: - Lenient decoding helpers
 
 private extension KeyedDecodingContainer {
     func value<T: Decodable>(_ key: Key, _ def: T) -> T {
@@ -84,7 +74,6 @@ private extension KeyedDecodingContainer {
     func optional<T: Decodable>(_ key: Key) -> T? {
         (try? decodeIfPresent(T.self, forKey: key)) ?? nil
     }
-    /// Accepts `true/false`, `1/0`, or `"1"/"true"`.
     func flexBool(_ key: Key, _ def: Bool = false) -> Bool {
         if let b: Bool = optional(key) { return b }
         if let i: Int = optional(key) { return i != 0 }
@@ -93,15 +82,12 @@ private extension KeyedDecodingContainer {
         }
         return def
     }
-    /// Accepts a JSON number or a numeric string.
     func flexInt64(_ key: Key, _ def: Int64 = 0) -> Int64 {
         if let i: Int64 = optional(key) { return i }
         if let s: String = optional(key), let i = Int64(s) { return i }
         return def
     }
 }
-
-// MARK: - MailItem (@Entity "mails")
 
 struct MailItem: Codable, Identifiable, Equatable {
     let id: Int64
@@ -165,14 +151,12 @@ struct MailItem: Codable, Identifiable, Equatable {
     }
 }
 
-// MARK: - Attachment
-
 struct Attachment: Codable, Identifiable, Equatable {
     var id: Int64
     var fileName: String
     var fileSize: Int64
     var fileExtension: String
-    var content: String?          // base64
+    var content: String?
     var createdAt: String
 
     enum CodingKeys: String, CodingKey {
@@ -200,8 +184,6 @@ struct Attachment: Codable, Identifiable, Equatable {
         createdAt     = c.value(.createdAt, "")
     }
 }
-
-// MARK: - MailDetails (full message payload from `mail/view`)
 
 struct MailDetails: Codable, Equatable {
     var id: Int64
@@ -244,8 +226,6 @@ struct MailDetails: Codable, Equatable {
         attachments.filter { !$0.fileName.isEmpty }
     }
 }
-
-// MARK: - Folder / Tag / Filter / Alias (@Entity)
 
 struct Folder: Codable, Identifiable, Equatable {
     let id: Int64
@@ -313,8 +293,6 @@ struct AliasAddress: Codable, Identifiable, Equatable {
     enum CodingKeys: String, CodingKey { case id, email }
 }
 
-// MARK: - Account / Security / Feedback
-
 struct UserAccount: Codable, Equatable {
     var email: String
     var token: String
@@ -371,16 +349,11 @@ struct TwoFactorQrData: Codable, Equatable {
     var qrImage: String = ""
 }
 
-// MARK: - RequestPayload (outbound RPC envelope)
-
-/// Mirrors Kotlin `RequestPayload`. `params`/`data` are dynamic JSON.
-/// `token` and `currentLang` always serialize (they have non-nil defaults),
-/// matching the Gson `serializeNulls()` behaviour for the fields that matter.
 struct RequestPayload: Encodable {
     let service: String
     let action: String
     var token: String = ""
-    var currentLang: String = "ru"
+    var currentLang: String = AppLanguage.currentCode
     var params: JSONValue? = nil
     var data: JSONValue? = nil
     var searchText: String? = nil
@@ -390,19 +363,15 @@ struct RequestPayload: Encodable {
     var pageId: String? = nil
 
     enum CodingKeys: String, CodingKey {
-        case service, action, token, currentLang, params, data
+        case service, action, token, params, data, draft
+        case currentLang = "current_lang"
         case searchText = "search_text"
         case lastMailId = "last_mail_id"
-        case page, draft
+        case page
         case pageId = "page_id"
     }
 }
 
-// MARK: - ApiResponse (inbound RPC envelope — the fat Gson union)
-
-/// Faithful port of Kotlin `ApiResponse<Any>`: a single struct carrying every
-/// field the backend may set. `data` stays as a `JSONValue` and is decoded on
-/// demand (see `mailDetails()` / `data(as:)`).
 struct ApiResponse: Decodable {
     let status: Int?
     let message: String?
@@ -413,7 +382,6 @@ struct ApiResponse: Decodable {
     let error: String?
     let total: JSONValue?
 
-    // Typed top-level collections (present depending on action)
     let mails: [MailItem]?
     let folders: [Folder]?
     let tags: [Tag]?
@@ -423,7 +391,6 @@ struct ApiResponse: Decodable {
     let lastMailId: Int64?
     let nothingChanged: Bool?
 
-    // Profile / account fields
     let id: Int64?
     let email: String?
     let firstName: String?
@@ -437,7 +404,6 @@ struct ApiResponse: Decodable {
     let storageUsed: Double?
     let storageTotal: Int64?
 
-    // 2FA setup
     let qr: String?
     let qrImage: String?
     let secret: String?
@@ -463,7 +429,6 @@ struct ApiResponse: Decodable {
         case secret
     }
 
-    /// Designated init so we can build synthetic (client-side) failures.
     init(
         status: Int? = nil, message: String? = nil, data: JSONValue? = nil,
         token: String? = nil, service: String? = nil, action: String? = nil,
@@ -491,7 +456,6 @@ struct ApiResponse: Decodable {
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        // `status` can arrive as a number or a numeric string.
         if let i = try? c.decodeIfPresent(Int.self, forKey: .status) {
             status = i
         } else if let s = try? c.decodeIfPresent(String.self, forKey: .status) {
@@ -530,16 +494,12 @@ struct ApiResponse: Decodable {
         secret         = try? c.decodeIfPresent(String.self, forKey: .secret) ?? nil
     }
 
-    // Helpers (ported from Kotlin) --------------------------------------
-
     func isSuccess() -> Bool { status == 1 }
 
-    /// A client-side failure envelope (matches Kotlin returning status = 0).
     static func failure(_ message: String) -> ApiResponse {
         ApiResponse(status: 0, message: message)
     }
 
-    /// Extracts the auth token from either the top-level `token` field or `data`.
     func extractToken() -> String? {
         if let t = token, !t.isEmpty { return t }
         guard let data = data else { return nil }
@@ -555,6 +515,5 @@ struct ApiResponse: Decodable {
         return TwoFactorQrData(secret: secret, qr: qr, qrImage: qrImage ?? "")
     }
 
-    /// Decode the dynamic `data` field into a concrete type on demand.
     func decodeData<T: Decodable>(as type: T.Type) -> T? { data?.decoded(T.self) }
 }

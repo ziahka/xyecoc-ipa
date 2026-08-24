@@ -71,9 +71,9 @@ final class AuthViewModel: ObservableObject {
 // MARK: - Root
 
 struct ContentView: View {
-
     @StateObject private var accounts = AccountStore()
     @AppStorage("app_theme") private var selectedTheme: AppTheme = .cyan
+    @AppStorage("app_language") private var selectedLanguage: AppLanguage = .ru
 
     var body: some View {
         Group {
@@ -81,12 +81,15 @@ struct ContentView: View {
                 NavigationStack {
                     InboxView(accounts: accounts)
                 }
-                .id(active)   // rebuild the inbox (fresh cache) when switching accounts
+                .id(active)
             } else {
-                LoginFlowView { await accounts.onLoggedIn() }
+                LoginFlowView {
+                    await accounts.onLoggedIn()
+                }
             }
         }
         .tint(selectedTheme.color)
+        .environment(\.locale, selectedLanguage.locale)
         .task { await accounts.syncActiveCache() }
     }
 }

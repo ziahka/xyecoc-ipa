@@ -131,3 +131,25 @@ enum AppTheme: String, CaseIterable, Identifiable {
         }
     }
 }
+
+enum AppLanguage: String, CaseIterable, Identifiable {
+    case ru = "ru"
+    case en = "en"
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .ru: return "Русский"
+        case .en: return "English"
+        }
+    }
+
+    var locale: Locale {
+        Locale(identifier: rawValue)
+    }
+
+    static var currentCode: String {
+        UserDefaults.standard.string(forKey: "app_language") ?? "ru"
+    }
+}
