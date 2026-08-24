@@ -73,6 +73,7 @@ final class AuthViewModel: ObservableObject {
 struct ContentView: View {
 
     @StateObject private var accounts = AccountStore()
+    @AppStorage("app_theme") private var selectedTheme: AppTheme = .cyan
 
     var body: some View {
         Group {
@@ -85,7 +86,7 @@ struct ContentView: View {
                 LoginFlowView { await accounts.onLoggedIn() }
             }
         }
-        .tint(.brand)
+        .tint(selectedTheme.color)
         .task { await accounts.syncActiveCache() }
     }
 }

@@ -71,3 +71,33 @@ extension Color {
         self.init(.sRGB, red: r, green: g, blue: b, opacity: a)
     }
 }
+
+enum AppTheme: String, CaseIterable, Identifiable {
+    case cyan = "cyan"
+    case blue = "blue"
+    case purple = "purple"
+    case green = "green"
+    case orange = "orange"
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .cyan: return "Бирюзовый (бренд)"
+        case .blue: return "Синий"
+        case .purple: return "Фиолетовый"
+        case .green: return "Зеленый"
+        case .orange: return "Оранжевый"
+        }
+    }
+
+    var color: Color {
+        switch self {
+        case .cyan: return Color(hex: "#18C9E1") ?? .cyan
+        case .blue: return .blue
+        case .purple: return .purple
+        case .green: return .green
+        case .orange: return .orange
+        }
+    }
+}
