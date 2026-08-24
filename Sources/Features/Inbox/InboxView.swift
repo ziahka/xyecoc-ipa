@@ -1,14 +1,3 @@
-//
-//  InboxView.swift
-//  XyecocMail
-//
-//  Port of `InboxScreen.kt` + `InboxViewModel`. Offline-first: the list is
-//  driven from the local cache (`MailDatabase`) and reconciled by the repo's
-//  `fetchMails`. Includes pull-to-refresh, swipe actions, cursor pagination
-//  (via `last_mail_id`), search, folder navigation, a compose FAB, and a
-//  multi-account switcher.
-//
-
 import SwiftUI
 
 // MARK: - ViewModel
@@ -119,7 +108,7 @@ final class InboxViewModel: ObservableObject {
     }
 }
 
-// MARK: - System folders (mirrors the Android drawer)
+// MARK: - System folders
 
 struct SystemFolder: Identifiable {
     let id: String
@@ -145,6 +134,7 @@ struct InboxView: View {
 
     @State private var showCompose = false
     @State private var showAccounts = false
+    @State private var composeSeed: ComposeSeed?
 
     private var searchBinding: Binding<String> {
         Binding(get: { vm.searchQuery }, set: { vm.onSearchChanged($0) })
@@ -167,6 +157,51 @@ struct InboxView: View {
                     MailRow(mail: mail)
                 }
                 .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 12))
+                .contextMenu {
+                    Button {
+                        composeSeed = makeReplySeed(for: mail)
+                    } label: {
+                        Label("Ответить", systemImage: "arrowshape.turn.up.left")
+                    }
+
+                    Button {
+                        Haptics.light()
+                        vm.setRead(mail, !mail.read)
+                    } label: {
+                        Label(
+                            mail.read ? "Отметить как непрочитанное" : "Отметить как прочитанное",
+                            systemImage: mail.read ? "envelope.badge" : "envelope.open"
+                        )
+                    }
+
+                    Button {
+                        Haptics.light()
+                        vm.toggleStar(mail)
+                    } label: {
+                        Label(
+                            mail.important ? "Убрать из избранного" : "В избранное",
+                            systemImage: mail.important ? "star.slash" : "star"
+                        )
+                    }
+
+                    if !mail.fromEmail.isEmpty {
+                        Button {
+                            UIPasteboard.general.string = mail.fromEmail
+                            Haptics.light()
+                        } label: {
+                            Label("Скопировать email отправителя", systemImage: "doc.on.doc")
+                        }
+                    }
+
+                    Divider()
+
+                    Button(role: .destructive) {
+                        Haptics.warning()
+                        vm.delete(mail)
+                    } label: {
+                        Label("Удалить", systemImage: "trash")
+                    }
+                }
                 .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                     Button(role: .destructive) {
                         Haptics.warning()
@@ -222,9 +257,19 @@ struct InboxView: View {
         .sheet(isPresented: $showCompose, onDismiss: { Task { await vm.refresh() } }) {
             ComposeView()
         }
+        .sheet(item: $composeSeed, onDismiss: { Task { await vm.refresh() } }) { seed in
+            ComposeView(seed: seed)
+        }
         .sheet(isPresented: $showAccounts) {
             AccountSwitcherView(accounts: accounts)
         }
+    }
+
+    private func makeReplySeed(for mail: MailItem) -> ComposeSeed {
+        let subject = mail.displaySubject()
+        let reSubject = subject.lowercased().hasPrefix("re:") ? subject : "Re: \(subject)"
+        let recipient = mail.fromEmail.isEmpty ? mail.sender : mail.fromEmail
+        return ComposeSeed(to: recipient, subject: reSubject, body: "")
     }
 
     // MARK: - Compose FAB
