@@ -344,7 +344,7 @@ struct SettingsView: View {
             HStack {
                 Text("Версия клиента")
                 Spacer()
-                Text("1.0.0 (Milestone 5)")
+                Text("1.0.1")
                     .foregroundStyle(.secondary)
             }
 
