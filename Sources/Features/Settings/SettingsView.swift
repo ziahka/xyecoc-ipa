@@ -1,5 +1,7 @@
 import SwiftUI
 
+// MARK: - ViewModel
+
 @MainActor
 final class SettingsViewModel: ObservableObject {
     @Published var email: String = ""
@@ -7,7 +9,7 @@ final class SettingsViewModel: ObservableObject {
     @Published var signatureReply: String = ""
     @Published var signatureNew: String = ""
     @Published var is2FAEnabled: Bool = false
-    @Published var aliases: [AliasItem] = []
+    @Published var aliases: [AliasAddress] = []
     @Published var folders: [Folder] = []
     @Published var tags: [Tag] = []
     @Published var isLoading: Bool = false
@@ -19,83 +21,107 @@ final class SettingsViewModel: ObservableObject {
         isLoading = true
         defer { isLoading = false }
 
-        if let profile = await repo.fetchProfile() {
-            email = profile.email ?? KeychainManager.shared.activeEmail() ?? ""
-            reserveEmail = profile.reserveEmail ?? ""
-            signatureReply = profile.signatureReply ?? ""
-            signatureNew = profile.signatureNew ?? ""
-            is2FAEnabled = profile.twoFactorStatus ?? false
-        } else {
-            email = KeychainManager.shared.activeEmail() ?? ""
+        email = KeychainManager.shared.activeEmail() ?? ""
+        let resp = await repo.getProfile()
+        if resp.isSuccess() {
+            if let em = resp.email, !em.isEmpty { self.email = em }
+            self.reserveEmail = resp.reserveEmail ?? ""
+            self.signatureReply = resp.signature ?? ""
+            self.signatureNew = resp.signature ?? ""
+            self.is2FAEnabled = (resp.twoFactor == "1" || resp.twoFactor == "true")
         }
 
-        aliases = await repo.fetchAliases()
-        folders = await db.folders()
-        tags = await db.tags()
-    }
+        let aliasResp = await repo.fetchAddresses()
+        if let list = aliasResp.addresses {
+            self.aliases = list
+        }
 
-    func saveSignatures() async -> Bool {
-        await repo.updateSignatures(reply: signatureReply, new: signatureNew)
+        self.folders = await db.folders()
+        self.tags = await db.tags()
     }
 
     func updatePassword(old: String, new: String) async -> Bool {
-        await repo.updatePassword(old: old, new: new)
+        let resp = await repo.updatePassword(old: old, new: new)
+        return resp.isSuccess()
     }
 
-    func updateReserveEmail(password: String, newReserve: String) async -> Bool {
-        let ok = await repo.setReserveEmail(password: password, email: newReserve)
-        if ok { reserveEmail = newReserve }
-        return ok
+    func updateReserveEmail(password: String, newEmail: String) async -> Bool {
+        let resp = await repo.updateReserveEmail(password: password, reserveEmail: newEmail)
+        if resp.isSuccess() {
+            self.reserveEmail = newEmail
+            return true
+        }
+        return false
     }
 
     func disable2FA(password: String) async -> Bool {
-        let ok = await repo.disable2FA(password: password)
-        if ok { is2FAEnabled = false }
-        return ok
+        let resp = await repo.disable2FA(password: password)
+        if resp.isSuccess() {
+            self.is2FAEnabled = false
+            return true
+        }
+        return false
     }
 
-    func deleteAlias(_ email: String) async {
-        if await repo.deleteAlias(email: email) {
-            aliases.removeAll { $0.email == email }
+    func saveSignatures() async -> Bool {
+        let resp = await repo.updateSignatures(reply: signatureReply, new: signatureNew)
+        return resp.isSuccess()
+    }
+
+    func deleteAlias(_ address: String) async {
+        let resp = await repo.deleteAlias(email: address)
+        if resp.isSuccess() {
+            aliases.removeAll { $0.email == address }
         }
     }
 
-    func createFolder(_ name: String) async {
-        if await repo.createFolder(name: name) {
+    func createFolder(_ name: String) async -> Bool {
+        let resp = await repo.createFolder(name: name)
+        if resp.isSuccess() {
             folders = await db.folders()
+            return true
         }
+        return false
     }
 
     func deleteFolder(_ name: String) async {
-        if await repo.deleteFolder(name: name) {
+        let resp = await repo.deleteFolder(name: name)
+        if resp.isSuccess() {
             folders = await db.folders()
         }
     }
 
-    func createTag(name: String, color: String) async {
-        if await repo.createTag(name: name, colorHex: color) {
+    func createTag(name: String, colorHex: String) async -> Bool {
+        let resp = await repo.createTag(name: name, colorHex: colorHex)
+        if resp.isSuccess() {
             tags = await db.tags()
+            return true
         }
+        return false
     }
 
     func deleteTag(id: Int64) async {
-        if await repo.deleteTag(id: id) {
+        let resp = await repo.deleteTag(id: id)
+        if resp.isSuccess() {
             tags = await db.tags()
         }
     }
 
     func deleteAccount(password: String) async -> Bool {
-        await repo.deleteAccount(password: password)
+        let resp = await repo.deleteAccount(password: password)
+        return resp.isSuccess()
     }
 }
+
+// MARK: - Root Settings Screen
 
 struct SettingsView: View {
     @ObservedObject var accounts: AccountStore
     @StateObject private var vm = SettingsViewModel()
     @ObservedObject private var security = SecurityManager.shared
 
-    @AppStorage("app_theme") private var selectedTheme: AppTheme = .cyan[cite: 1, 3]
-    @AppStorage("app_language") private var selectedLanguage: AppLanguage = .ru[cite: 3, 6]
+    @AppStorage("app_theme") private var selectedTheme: AppTheme = .cyan
+    @AppStorage("app_language") private var selectedLanguage: AppLanguage = .ru
 
     @State private var showPasswordSheet = false
     @State private var showReserveSheet = false
@@ -116,9 +142,10 @@ struct SettingsView: View {
             appearanceAndLangSection
             securitySection
             mailManagementSection
+            communitySection
             appAndDestructiveSection
         }
-        .navigationTitle("Настройки")[cite: 3, 6]
+        .navigationTitle("Настройки")
         .task { await vm.load() }
         .sheet(isPresented: $showPasswordSheet) { ChangePasswordSheet(vm: vm) }
         .sheet(isPresented: $showReserveSheet) { ReserveEmailSheet(vm: vm) }
@@ -201,23 +228,23 @@ struct SettingsView: View {
             Picker("Цвет темы", selection: $selectedTheme) {
                 ForEach(AppTheme.allCases) { theme in
                     HStack {
-                        Circle().fill(theme.color).frame(width: 14, height: 14)[cite: 1, 3]
-                        Text(theme.title)[cite: 1, 3]
+                        Circle().fill(theme.color).frame(width: 14, height: 14)
+                        Text(theme.title)
                     }
-                    .tag(theme)[cite: 1, 3]
+                    .tag(theme)
                 }
             }
 
             Picker("Язык интерфейса", selection: $selectedLanguage) {
                 ForEach(AppLanguage.allCases) { lang in
-                    Text(lang.title).tag(lang)[cite: 3, 6]
+                    Text(lang.title).tag(lang)
                 }
             }
         }
     }
 
     private var securitySection: some View {
-        Section("Безопасность") {
+        Section("Безопасность устройства") {
             if security.hasPin {
                 Button("Изменить PIN-код") {
                     resetPinFlow()
@@ -229,6 +256,8 @@ struct SettingsView: View {
                 } label: {
                     Text("Удалить PIN-код")
                 }
+
+                Toggle("Использовать \(security.biometryTitle)", isOn: $security.isBiometryEnabled)
             } else {
                 Button("Установить PIN-код") {
                     resetPinFlow()
@@ -262,6 +291,34 @@ struct SettingsView: View {
                 FoldersAndTagsView(vm: vm)
             } label: {
                 Label("Папки и теги", systemImage: "folder.badge.gearshape")
+            }
+        }
+    }
+
+    private var communitySection: some View {
+        Section("Сообщество") {
+            if let serviceURL = URL(string: "https://t.me/xyecoc") {
+                Link(destination: serviceURL) {
+                    HStack {
+                        Label("Telegram сервиса", systemImage: "paperplane")
+                        Spacer()
+                        Image(systemName: "arrow.up.forward.app")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+
+            if let appURL = URL(string: "https://t.me/xyecoc_ipa") {
+                Link(destination: appURL) {
+                    HStack {
+                        Label("Telegram приложения", systemImage: "paperplane.fill")
+                        Spacer()
+                        Image(systemName: "arrow.up.forward.app")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }
         }
     }
@@ -355,6 +412,8 @@ struct SettingsView: View {
     }
 }
 
+// MARK: - Sheets & Views
+
 struct ChangePasswordSheet: View {
     @ObservedObject var vm: SettingsViewModel
     @Environment(\.dismiss) private var dismiss
@@ -432,7 +491,7 @@ struct ReserveEmailSheet: View {
                 Button(isSubmitting ? "Сохранение..." : "Сохранить") {
                     isSubmitting = true
                     Task {
-                        if await vm.updateReserveEmail(password: password, newReserve: email) {
+                        if await vm.updateReserveEmail(password: password, newEmail: email) {
                             dismiss()
                         } else {
                             errorMessage = "Ошибка при сохранении. Проверьте пароль."
@@ -457,7 +516,7 @@ struct TwoFactorSetupSheet: View {
     @Environment(\.dismiss) private var dismiss
     private let repo = SettingsRepository()
 
-    @State private var qrData: TwoFactorQRData?
+    @State private var qrData: TwoFactorQrData?
     @State private var totpCode = ""
     @State private var password = ""
     @State private var errorMessage: String?
@@ -489,11 +548,12 @@ struct TwoFactorSetupSheet: View {
                                 .keyboardType(.numberPad)
                             Button("Активировать") {
                                 Task {
-                                    if await repo.enable2FA(code: totpCode, secret: qr.secret) {
+                                    let resp = await repo.enable2FA(code: totpCode, secret: qr.secret)
+                                    if resp.isSuccess() {
                                         vm.is2FAEnabled = true
                                         dismiss()
                                     } else {
-                                        errorMessage = "Неверный код"
+                                        errorMessage = resp.message ?? "Неверный код"
                                     }
                                 }
                             }
@@ -515,7 +575,10 @@ struct TwoFactorSetupSheet: View {
             }
             .task {
                 if !vm.is2FAEnabled {
-                    qrData = await repo.fetch2FAQR()
+                    let resp = await repo.get2FAQR()
+                    if let data = resp.twoFactorQrData() {
+                        self.qrData = data
+                    }
                 }
             }
         }
@@ -576,13 +639,15 @@ struct AliasesManagerView: View {
             }
 
             Section("Добавить псевдоним") {
-                TextField("alias@domain.com", text: $newAlias)
+                TextField("alias@xyecoc.com", text: $newAlias)
                     .textInputAutocapitalization(.never)
                 SecureField("Пароль", text: $aliasPassword)
                 Button("Создать") {
                     Task {
-                        if await repo.createAlias(email: newAlias, password: aliasPassword) {
-                            vm.aliases = await repo.fetchAliases()
+                        let resp = await repo.createAlias(email: newAlias, password: aliasPassword)
+                        if resp.isSuccess() {
+                            let updated = await repo.fetchAddresses()
+                            if let list = updated.addresses { vm.aliases = list }
                             newAlias = ""
                             aliasPassword = ""
                         }
@@ -616,8 +681,9 @@ struct FoldersAndTagsView: View {
                     TextField("Имя новой папки", text: $newFolderName)
                     Button("Создать") {
                         Task {
-                            await vm.createFolder(newFolderName)
-                            newFolderName = ""
+                            if await vm.createFolder(newFolderName) {
+                                newFolderName = ""
+                            }
                         }
                     }
                     .disabled(newFolderName.isEmpty)
@@ -640,8 +706,9 @@ struct FoldersAndTagsView: View {
                     TextField("Имя тега", text: $newTagName)
                     Button("Создать") {
                         Task {
-                            await vm.createTag(name: newTagName, color: newTagColor)
-                            newTagName = ""
+                            if await vm.createTag(name: newTagName, colorHex: newTagColor) {
+                                newTagName = ""
+                            }
                         }
                     }
                     .disabled(newTagName.isEmpty)
@@ -674,7 +741,8 @@ struct FeedbackSheet: View {
 
                 Button("Отправить") {
                     Task {
-                        if await repo.sendFeedback(type: type, subject: subject, message: message) {
+                        let resp = await repo.sendFeedback(type: type, subject: subject, message: message)
+                        if resp.isSuccess() {
                             isSent = true
                         }
                     }
