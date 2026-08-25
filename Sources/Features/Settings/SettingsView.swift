@@ -1,11 +1,4 @@
-//
-//  SettingsView.swift
-//  XyecocMail
-//
-
 import SwiftUI
-
-// MARK: - ViewModel
 
 @MainActor
 final class SettingsViewModel: ObservableObject {
@@ -14,7 +7,7 @@ final class SettingsViewModel: ObservableObject {
     @Published var signatureReply: String = ""
     @Published var signatureNew: String = ""
     @Published var is2FAEnabled: Bool = false
-    @Published var aliases: [AliasAddress] = []
+    @Published var aliases: [AliasItem] = []
     @Published var folders: [Folder] = []
     @Published var tags: [Tag] = []
     @Published var isLoading: Bool = false
@@ -26,109 +19,84 @@ final class SettingsViewModel: ObservableObject {
         isLoading = true
         defer { isLoading = false }
 
-        email = KeychainManager.shared.activeEmail() ?? ""
-        let resp = await repo.getProfile()
-        if resp.isSuccess() {
-            if let em = resp.email, !em.isEmpty { self.email = em }
-            self.reserveEmail = resp.reserveEmail ?? ""
-            self.signatureReply = resp.signature ?? ""
-            self.signatureNew = resp.signature ?? ""
-            self.is2FAEnabled = (resp.twoFactor == "1" || resp.twoFactor == "true")
+        if let profile = await repo.fetchProfile() {
+            email = profile.email ?? KeychainManager.shared.activeEmail() ?? ""
+            reserveEmail = profile.reserveEmail ?? ""
+            signatureReply = profile.signatureReply ?? ""
+            signatureNew = profile.signatureNew ?? ""
+            is2FAEnabled = profile.twoFactorStatus ?? false
+        } else {
+            email = KeychainManager.shared.activeEmail() ?? ""
         }
 
-        let aliasResp = await repo.fetchAddresses()
-        if let list = aliasResp.addresses {
-            self.aliases = list
-        }
-
-        self.folders = await db.folders()
-        self.tags = await db.tags()
-    }
-
-    func updatePassword(old: String, new: String) async -> Bool {
-        let resp = await repo.updatePassword(old: old, new: new)
-        return resp.isSuccess()
-    }
-
-    func updateReserveEmail(password: String, newEmail: String) async -> Bool {
-        let resp = await repo.updateReserveEmail(password: password, reserveEmail: newEmail)
-        if resp.isSuccess() {
-            self.reserveEmail = newEmail
-            return true
-        }
-        return false
-    }
-
-    func disable2FA(password: String) async -> Bool {
-        let resp = await repo.disable2FA(password: password)
-        if resp.isSuccess() {
-            self.is2FAEnabled = false
-            return true
-        }
-        return false
+        aliases = await repo.fetchAliases()
+        folders = await db.folders()
+        tags = await db.tags()
     }
 
     func saveSignatures() async -> Bool {
-        let resp = await repo.updateSignatures(reply: signatureReply, new: signatureNew)
-        return resp.isSuccess()
+        await repo.updateSignatures(reply: signatureReply, new: signatureNew)
     }
 
-    func deleteAlias(_ address: String) async {
-        let resp = await repo.deleteAlias(email: address)
-        if resp.isSuccess() {
-            aliases.removeAll { $0.email == address }
+    func updatePassword(old: String, new: String) async -> Bool {
+        await repo.updatePassword(old: old, new: new)
+    }
+
+    func updateReserveEmail(password: String, newReserve: String) async -> Bool {
+        let ok = await repo.setReserveEmail(password: password, email: newReserve)
+        if ok { reserveEmail = newReserve }
+        return ok
+    }
+
+    func disable2FA(password: String) async -> Bool {
+        let ok = await repo.disable2FA(password: password)
+        if ok { is2FAEnabled = false }
+        return ok
+    }
+
+    func deleteAlias(_ email: String) async {
+        if await repo.deleteAlias(email: email) {
+            aliases.removeAll { $0.email == email }
         }
     }
 
-    func createFolder(_ name: String) async -> Bool {
-        let resp = await repo.createFolder(name: name)
-        if resp.isSuccess() {
+    func createFolder(_ name: String) async {
+        if await repo.createFolder(name: name) {
             folders = await db.folders()
-            return true
         }
-        return false
     }
 
     func deleteFolder(_ name: String) async {
-        let resp = await repo.deleteFolder(name: name)
-        if resp.isSuccess() {
+        if await repo.deleteFolder(name: name) {
             folders = await db.folders()
         }
     }
 
-    func createTag(name: String, colorHex: String) async -> Bool {
-        let resp = await repo.createTag(name: name, colorHex: colorHex)
-        if resp.isSuccess() {
+    func createTag(name: String, color: String) async {
+        if await repo.createTag(name: name, colorHex: color) {
             tags = await db.tags()
-            return true
         }
-        return false
     }
 
     func deleteTag(id: Int64) async {
-        let resp = await repo.deleteTag(id: id)
-        if resp.isSuccess() {
+        if await repo.deleteTag(id: id) {
             tags = await db.tags()
         }
     }
 
     func deleteAccount(password: String) async -> Bool {
-        let resp = await repo.deleteAccount(password: password)
-        return resp.isSuccess()
+        await repo.deleteAccount(password: password)
     }
 }
-
-// MARK: - Root Settings Screen
 
 struct SettingsView: View {
     @ObservedObject var accounts: AccountStore
     @StateObject private var vm = SettingsViewModel()
     @ObservedObject private var security = SecurityManager.shared
 
-    @AppStorage("app_theme") private var selectedTheme: AppTheme = .cyan
-    @AppStorage("app_language") private var selectedLanguage: AppLanguage = .ru
+    @AppStorage("app_theme") private var selectedTheme: AppTheme = .cyan[cite: 1, 3]
+    @AppStorage("app_language") private var selectedLanguage: AppLanguage = .ru[cite: 3, 6]
 
-    // Sheets & Dialogs
     @State private var showPasswordSheet = false
     @State private var showReserveSheet = false
     @State private var show2FASheet = false
@@ -137,7 +105,6 @@ struct SettingsView: View {
     @State private var showDeleteAlert = false
     @State private var deletePassword = ""
 
-    // PIN Setup State
     @State private var newPin = ""
     @State private var confirmPin = ""
     @State private var pinStep = 0
@@ -151,7 +118,7 @@ struct SettingsView: View {
             mailManagementSection
             appAndDestructiveSection
         }
-        .navigationTitle("Настройки")
+        .navigationTitle("Настройки")[cite: 3, 6]
         .task { await vm.load() }
         .sheet(isPresented: $showPasswordSheet) { ChangePasswordSheet(vm: vm) }
         .sheet(isPresented: $showReserveSheet) { ReserveEmailSheet(vm: vm) }
@@ -159,7 +126,7 @@ struct SettingsView: View {
         .sheet(isPresented: $showFeedbackSheet) { FeedbackSheet() }
         .sheet(isPresented: $showSetPinSheet) { pinSetupSheet }
         .alert("Удаление аккаунта", isPresented: $showDeleteAlert) {
-            SecureField("Пароль от ящика", text: $deletePassword)
+            SecureField("Пароль от аккаунта", text: $deletePassword)
             Button("Отмена", role: .cancel) { deletePassword = "" }
             Button("Удалить навсегда", role: .destructive) {
                 Task {
@@ -170,11 +137,9 @@ struct SettingsView: View {
                 }
             }
         } message: {
-            Text("Это действие безвозвратно удалит почтовый ящик и всю корреспонденцию.")
+            Text("Это действие безвозвратно удалит почтовый ящик и все связанные письма.")
         }
     }
-
-    // MARK: - 1. Секция «Аккаунт»
 
     private var accountSection: some View {
         Section("Аккаунт") {
@@ -182,21 +147,21 @@ struct SettingsView: View {
                 ZStack {
                     Circle()
                         .fill(AvatarGenerator.backgroundColor(for: vm.email))
-                        .frame(width: 44, height: 44)
+                        .frame(width: 48, height: 48)
                     Text(AvatarGenerator.initials(displayName: vm.email, email: vm.email))
                         .font(.headline.bold())
                         .foregroundStyle(.white)
                 }
 
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: 3) {
                     Text(vm.email.isEmpty ? "Загрузка..." : vm.email)
-                        .font(.subheadline.weight(.semibold))
+                        .font(.subheadline.bold())
                     Text("Основной адрес")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
             }
-            .padding(.vertical, 2)
+            .padding(.vertical, 4)
 
             Button {
                 showPasswordSheet = true
@@ -231,32 +196,28 @@ struct SettingsView: View {
         }
     }
 
-    // MARK: - 2. Секция «Внешний вид и локализация»
-
     private var appearanceAndLangSection: some View {
         Section("Внешний вид и локализация") {
             Picker("Цвет темы", selection: $selectedTheme) {
                 ForEach(AppTheme.allCases) { theme in
                     HStack {
-                        Circle().fill(theme.color).frame(width: 14, height: 14)
-                        Text(theme.title)
+                        Circle().fill(theme.color).frame(width: 14, height: 14)[cite: 1, 3]
+                        Text(theme.title)[cite: 1, 3]
                     }
-                    .tag(theme)
+                    .tag(theme)[cite: 1, 3]
                 }
             }
 
             Picker("Язык интерфейса", selection: $selectedLanguage) {
                 ForEach(AppLanguage.allCases) { lang in
-                    Text(lang.title).tag(lang)
+                    Text(lang.title).tag(lang)[cite: 3, 6]
                 }
             }
         }
     }
 
-    // MARK: - 3. Секция «Безопасность»
-
     private var securitySection: some View {
-        Section("Безопасность устройства") {
+        Section("Безопасность") {
             if security.hasPin {
                 Button("Изменить PIN-код") {
                     resetPinFlow()
@@ -268,8 +229,6 @@ struct SettingsView: View {
                 } label: {
                     Text("Удалить PIN-код")
                 }
-
-                Toggle("Использовать \(security.biometryTitle)", isOn: $security.isBiometryEnabled)
             } else {
                 Button("Установить PIN-код") {
                     resetPinFlow()
@@ -278,8 +237,6 @@ struct SettingsView: View {
             }
         }
     }
-
-    // MARK: - 4. Секция «Почта»
 
     private var mailManagementSection: some View {
         Section("Почта") {
@@ -309,8 +266,6 @@ struct SettingsView: View {
         }
     }
 
-    // MARK: - 5. Секция «О приложении и аккаунте»
-
     private var appAndDestructiveSection: some View {
         Section("О приложении") {
             Button {
@@ -322,7 +277,7 @@ struct SettingsView: View {
             HStack {
                 Text("Версия клиента")
                 Spacer()
-                Text("1.0.1")
+                Text("1.0.0 (Milestone 5)")
                     .foregroundStyle(.secondary)
             }
 
@@ -339,8 +294,6 @@ struct SettingsView: View {
             }
         }
     }
-
-    // MARK: - PIN Setup Flow
 
     private var pinSetupSheet: some View {
         NavigationStack {
@@ -402,8 +355,6 @@ struct SettingsView: View {
     }
 }
 
-// MARK: - Sheets & Views
-
 struct ChangePasswordSheet: View {
     @ObservedObject var vm: SettingsViewModel
     @Environment(\.dismiss) private var dismiss
@@ -419,19 +370,19 @@ struct ChangePasswordSheet: View {
                 Section {
                     SecureField("Текущий пароль", text: $oldPassword)
                     SecureField("Новый пароль", text: $newPassword)
-                    SecureField("Повторите пароль", text: $confirmPassword)
+                    SecureField("Повторите новый пароль", text: $confirmPassword)
                 }
 
-                if let err = errorMessage {
+                if let error = errorMessage {
                     Section {
-                        Text(err).foregroundStyle(.red).font(.footnote)
+                        Text(error).foregroundStyle(.red).font(.footnote)
                     }
                 }
 
                 Section {
                     Button(isSubmitting ? "Сохранение..." : "Изменить пароль") {
                         guard newPassword == confirmPassword else {
-                            errorMessage = "Пароли не совпадают"
+                            errorMessage = "Новые пароли не совпадают"
                             return
                         }
                         isSubmitting = true
@@ -467,11 +418,11 @@ struct ReserveEmailSheet: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("Резервный почтовый ящик") {
-                    TextField("example@domain.com", text: $email)
+                Section("Новый резервный адрес") {
+                    TextField("example@mail.com", text: $email)
                         .keyboardType(.emailAddress)
                         .textInputAutocapitalization(.never)
-                    SecureField("Пароль от аккаунта", text: $password)
+                    SecureField("Подтвердите паролем от аккаунта", text: $password)
                 }
 
                 if let err = errorMessage {
@@ -481,10 +432,10 @@ struct ReserveEmailSheet: View {
                 Button(isSubmitting ? "Сохранение..." : "Сохранить") {
                     isSubmitting = true
                     Task {
-                        if await vm.updateReserveEmail(password: password, newEmail: email) {
+                        if await vm.updateReserveEmail(password: password, newReserve: email) {
                             dismiss()
                         } else {
-                            errorMessage = "Ошибка обновления. Проверьте пароль."
+                            errorMessage = "Ошибка при сохранении. Проверьте пароль."
                         }
                         isSubmitting = false
                     }
@@ -506,8 +457,8 @@ struct TwoFactorSetupSheet: View {
     @Environment(\.dismiss) private var dismiss
     private let repo = SettingsRepository()
 
-    @State private var qrData: TwoFactorQrData?
-    @State private var code = ""
+    @State private var qrData: TwoFactorQRData?
+    @State private var totpCode = ""
     @State private var password = ""
     @State private var errorMessage: String?
 
@@ -515,7 +466,7 @@ struct TwoFactorSetupSheet: View {
         NavigationStack {
             Form {
                 if vm.is2FAEnabled {
-                    Section("Отключение двухфакторной защиты") {
+                    Section("Отключение 2FA") {
                         SecureField("Пароль от аккаунта", text: $password)
                         Button("Отключить 2FA", role: .destructive) {
                             Task {
@@ -529,27 +480,26 @@ struct TwoFactorSetupSheet: View {
                         .disabled(password.isEmpty)
                     }
                 } else {
-                    Section("Настройка 2FA") {
+                    Section("Настройка аутентификатора") {
                         if let qr = qrData {
                             Text("Секретный ключ: \(qr.secret)")
                                 .font(.caption.monospaced())
                                 .textSelection(.enabled)
-                            TextField("6-значный код TOTP", text: $code)
+                            TextField("6-значный код", text: $totpCode)
                                 .keyboardType(.numberPad)
                             Button("Активировать") {
                                 Task {
-                                    let resp = await repo.enable2FA(code: code, secret: qr.secret)
-                                    if resp.isSuccess() {
+                                    if await repo.enable2FA(code: totpCode, secret: qr.secret) {
                                         vm.is2FAEnabled = true
                                         dismiss()
                                     } else {
-                                        errorMessage = resp.message ?? "Неверный код"
+                                        errorMessage = "Неверный код"
                                     }
                                 }
                             }
-                            .disabled(code.count != 6)
+                            .disabled(totpCode.count != 6)
                         } else {
-                            ProgressView("Генерация параметров 2FA...")
+                            ProgressView("Генерация ключа...")
                         }
                     }
                 }
@@ -558,17 +508,14 @@ struct TwoFactorSetupSheet: View {
                     Text(err).foregroundStyle(.red).font(.footnote)
                 }
             }
-            .navigationTitle("2FA Безопасность")
+            .navigationTitle("Двухфакторная защита")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Закрыть") { dismiss() } }
             }
             .task {
                 if !vm.is2FAEnabled {
-                    let resp = await repo.get2FAQR()
-                    if let data = resp.twoFactorQrData() {
-                        self.qrData = data
-                    }
+                    qrData = await repo.fetch2FAQR()
                 }
             }
         }
@@ -582,16 +529,16 @@ struct SignaturesEditorView: View {
 
     var body: some View {
         Form {
-            Section("Подпись для новых сообщений") {
+            Section("Подпись для новых писем") {
                 TextEditor(text: $vm.signatureNew)
                     .frame(minHeight: 80)
             }
-            Section("Подпись для ответов на письма") {
+            Section("Подпись для ответов") {
                 TextEditor(text: $vm.signatureReply)
                     .frame(minHeight: 80)
             }
             Section {
-                Button("Сохранить изменения") {
+                Button("Сохранить подписи") {
                     Task {
                         _ = await vm.saveSignatures()
                         isSaved = true
@@ -600,7 +547,7 @@ struct SignaturesEditorView: View {
             }
         }
         .navigationTitle("Подписи")
-        .alert("Успешно сохранено", isPresented: $isSaved) {
+        .alert("Сохранено", isPresented: $isSaved) {
             Button("ОК", role: .cancel) { dismiss() }
         }
     }
@@ -614,27 +561,28 @@ struct AliasesManagerView: View {
 
     var body: some View {
         List {
-            Section("Активные псевдонимы") {
+            Section("Ваши псевдонимы") {
                 ForEach(vm.aliases) { alias in
-                    Text(alias.email)
-                        .swipeActions {
-                            Button(role: .destructive) {
-                                Task { await vm.deleteAlias(alias.email) }
-                            } label: { Label("Удалить", systemImage: "trash") }
-                        }
+                    HStack {
+                        Text(alias.email)
+                        Spacer()
+                    }
+                    .swipeActions {
+                        Button(role: .destructive) {
+                            Task { await vm.deleteAlias(alias.email) }
+                        } label: { Label("Удалить", systemImage: "trash") }
+                    }
                 }
             }
 
-            Section("Добавить новый псевдоним") {
-                TextField("alias@xyecoc.com", text: $newAlias)
+            Section("Добавить псевдоним") {
+                TextField("alias@domain.com", text: $newAlias)
                     .textInputAutocapitalization(.never)
                 SecureField("Пароль", text: $aliasPassword)
-                Button("Создать псевдоним") {
+                Button("Создать") {
                     Task {
-                        let resp = await repo.createAlias(email: newAlias, password: aliasPassword)
-                        if resp.isSuccess() {
-                            let updated = await repo.fetchAddresses()
-                            if let list = updated.addresses { vm.aliases = list }
+                        if await repo.createAlias(email: newAlias, password: aliasPassword) {
+                            vm.aliases = await repo.fetchAliases()
                             newAlias = ""
                             aliasPassword = ""
                         }
@@ -651,7 +599,7 @@ struct FoldersAndTagsView: View {
     @ObservedObject var vm: SettingsViewModel
     @State private var newFolderName = ""
     @State private var newTagName = ""
-    @State private var newTagColorHex = "#18C9E1"
+    @State private var newTagColor = "#18C9E1"
 
     var body: some View {
         List {
@@ -665,12 +613,11 @@ struct FoldersAndTagsView: View {
                         }
                 }
                 HStack {
-                    TextField("Название папки", text: $newFolderName)
+                    TextField("Имя новой папки", text: $newFolderName)
                     Button("Создать") {
                         Task {
-                            if await vm.createFolder(newFolderName) {
-                                newFolderName = ""
-                            }
+                            await vm.createFolder(newFolderName)
+                            newFolderName = ""
                         }
                     }
                     .disabled(newFolderName.isEmpty)
@@ -693,9 +640,8 @@ struct FoldersAndTagsView: View {
                     TextField("Имя тега", text: $newTagName)
                     Button("Создать") {
                         Task {
-                            if await vm.createTag(name: newTagName, colorHex: newTagColorHex) {
-                                newTagName = ""
-                            }
+                            await vm.createTag(name: newTagName, color: newTagColor)
+                            newTagName = ""
                         }
                     }
                     .disabled(newTagName.isEmpty)
@@ -711,25 +657,24 @@ struct FeedbackSheet: View {
     private let repo = SettingsRepository()
     @State private var subject = ""
     @State private var message = ""
-    @State private var type = "question"
+    @State private var type = "feedback"
     @State private var isSent = false
 
     var body: some View {
         NavigationStack {
             Form {
-                Picker("Категория", selection: $type) {
-                    Text("Вопрос").tag("question")
+                Picker("Тип обращения", selection: $type) {
+                    Text("Отзыв").tag("feedback")
                     Text("Ошибка").tag("bug")
-                    Text("Предложение").tag("feedback")
+                    Text("Вопрос").tag("question")
                 }
-                TextField("Тема обращения", text: $subject)
+                TextField("Тема", text: $subject)
                 TextEditor(text: $message)
                     .frame(minHeight: 120)
 
-                Button("Отправить обращение") {
+                Button("Отправить") {
                     Task {
-                        let resp = await repo.sendFeedback(type: type, subject: subject, message: message)
-                        if resp.isSuccess() {
+                        if await repo.sendFeedback(type: type, subject: subject, message: message) {
                             isSent = true
                         }
                     }
@@ -741,7 +686,7 @@ struct FeedbackSheet: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Отмена") { dismiss() } }
             }
-            .alert("Обращение отправлено", isPresented: $isSent) {
+            .alert("Отправлено", isPresented: $isSent) {
                 Button("ОК", role: .cancel) { dismiss() }
             }
         }

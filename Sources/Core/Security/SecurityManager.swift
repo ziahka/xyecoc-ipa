@@ -1,5 +1,4 @@
 import Foundation
-import LocalAuthentication
 import CryptoKit
 
 @MainActor
@@ -7,38 +6,15 @@ final class SecurityManager: ObservableObject {
     static let shared = SecurityManager()
 
     private let pinKeychainKey = "app_security_pin_hash"
-    private let biometryDefaultsKey = "app_security_biometry_enabled"
 
     @Published var isLocked: Bool = false
-    @Published var isBiometryEnabled: Bool {
-        didSet {
-            UserDefaults.standard.set(isBiometryEnabled, forKey: biometryDefaultsKey)
-        }
-    }
-
-    private var isAuthenticating: Bool = false
 
     private init() {
-        self.isBiometryEnabled = UserDefaults.standard.bool(forKey: biometryDefaultsKey)
         self.isLocked = (SecurityManager.readPinHashFromKeychain(key: "app_security_pin_hash") != nil)
     }
 
     var hasPin: Bool {
         getPinHash() != nil
-    }
-
-    var biometryType: LABiometryType {
-        let context = LAContext()
-        _ = context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: nil)
-        return context.biometryType
-    }
-
-    var biometryTitle: String {
-        switch biometryType {
-        case .faceID: return "Face ID"
-        case .touchID: return "Touch ID"
-        default: return "Биометрия"
-        }
     }
 
     func setPin(_ pin: String) -> Bool {
@@ -66,45 +42,14 @@ final class SecurityManager: ObservableObject {
 
     func removePin() {
         deletePinHash()
-        isBiometryEnabled = false
         isLocked = false
-        isAuthenticating = false
         objectWillChange.send()
     }
 
     func emergencyReset() {
         deletePinHash()
-        isBiometryEnabled = false
         isLocked = false
-        isAuthenticating = false
-        UserDefaults.standard.removeObject(forKey: biometryDefaultsKey)
         objectWillChange.send()
-    }
-
-    func authenticateWithBiometry() async {
-        guard isBiometryEnabled, hasPin, !isAuthenticating, isLocked else { return }
-
-        isAuthenticating = true
-        defer { isAuthenticating = false }
-
-        let context = LAContext()
-        context.localizedCancelTitle = "Ввести PIN-код"
-        var error: NSError?
-
-        guard context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &error) else {
-            return
-        }
-
-        let reason = "Разблокируйте приложение с помощью \(biometryTitle)"
-
-        do {
-            let success = try await context.evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, localizedReason: reason)
-            if success {
-                self.isLocked = false
-            }
-        } catch {
-            // Обработка отмены пользователем или системного прерывания без краша
-        }
     }
 
     func lockAppIfNeeded() {

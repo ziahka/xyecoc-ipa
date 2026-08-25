@@ -30,7 +30,6 @@ struct LockOverlayView: View {
                         .foregroundStyle(.secondary)
                 }
 
-                // Индикация 4 точек
                 HStack(spacing: 18) {
                     ForEach(0..<4, id: \.self) { index in
                         Circle()
@@ -43,7 +42,6 @@ struct LockOverlayView: View {
                 .padding(.vertical, 8)
                 .offset(x: isError ? -10 : 0)
 
-                // Скрытое текстовое поле
                 TextField("", text: $enteredPin)
                     .keyboardType(.numberPad)
                     .textContentType(.oneTimeCode)
@@ -60,18 +58,6 @@ struct LockOverlayView: View {
                         }
                     }
 
-                if security.isBiometryEnabled {
-                    Button {
-                        Task {
-                            await security.authenticateWithBiometry()
-                        }
-                    } label: {
-                        Label("Войти через \(security.biometryTitle)", systemImage: security.biometryType == .faceID ? "faceid" : "touchid")
-                            .font(.subheadline.bold())
-                    }
-                    .padding(.top, 8)
-                }
-
                 Spacer()
 
                 Button("Сбросить PIN через перелогин") {
@@ -85,11 +71,6 @@ struct LockOverlayView: View {
         }
         .onAppear {
             isKeyboardFocused = true
-        }
-        .task {
-            guard security.isBiometryEnabled else { return }
-            try? await Task.sleep(nanoseconds: 300_000_000)
-            await security.authenticateWithBiometry()
         }
         .alert("Сброс PIN-кода", isPresented: $showResetAlert) {
             Button("Отмена", role: .cancel) { }
@@ -118,5 +99,3 @@ struct LockOverlayView: View {
         }
     }
 }
-
-// ы
