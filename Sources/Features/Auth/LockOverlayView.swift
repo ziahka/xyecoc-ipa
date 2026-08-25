@@ -30,7 +30,7 @@ struct LockOverlayView: View {
                         .foregroundStyle(.secondary)
                 }
 
-                // индикация 4 точек
+                // Индикация 4 точек
                 HStack(spacing: 18) {
                     ForEach(0..<4, id: \.self) { index in
                         Circle()
@@ -43,7 +43,7 @@ struct LockOverlayView: View {
                 .padding(.vertical, 8)
                 .offset(x: isError ? -10 : 0)
 
-                // скрытое нативное поле ввода
+                // Скрытое текстовое поле
                 TextField("", text: $enteredPin)
                     .keyboardType(.numberPad)
                     .textContentType(.oneTimeCode)
@@ -62,7 +62,9 @@ struct LockOverlayView: View {
 
                 if security.isBiometryEnabled {
                     Button {
-                        security.authenticateWithBiometry()
+                        Task {
+                            await security.authenticateWithBiometry()
+                        }
                     } label: {
                         Label("Войти через \(security.biometryTitle)", systemImage: security.biometryType == .faceID ? "faceid" : "touchid")
                             .font(.subheadline.bold())
@@ -72,7 +74,7 @@ struct LockOverlayView: View {
 
                 Spacer()
 
-                Button("Забыли PIN-код?") {
+                Button("Сбросить PIN через перелогин") {
                     showResetAlert = true
                 }
                 .font(.footnote)
@@ -83,20 +85,22 @@ struct LockOverlayView: View {
         }
         .onAppear {
             isKeyboardFocused = true
-            if security.isBiometryEnabled {
-                security.authenticateWithBiometry()
-            }
+        }
+        .task {
+            guard security.isBiometryEnabled else { return }
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            await security.authenticateWithBiometry()
         }
         .alert("Сброс PIN-кода", isPresented: $showResetAlert) {
             Button("Отмена", role: .cancel) { }
-            Button("Выйти и сбросить", role: .destructive) {
-                security.removePin()
+            Button("Сбросить и выйти", role: .destructive) {
+                security.emergencyReset()
                 Task {
                     await onEmergencyReset()
                 }
             }
         } message: {
-            Text("Для сброса кода потребуется повторно авторизоваться во всех аккаунтах.")
+            Text("PIN-код будет удален. Потребуется повторно войти в почтовый аккаунт.")
         }
     }
 

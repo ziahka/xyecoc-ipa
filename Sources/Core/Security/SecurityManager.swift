@@ -16,9 +16,11 @@ final class SecurityManager: ObservableObject {
         }
     }
 
+    private var isAuthenticating: Bool = false
+
     private init() {
         self.isBiometryEnabled = UserDefaults.standard.bool(forKey: biometryDefaultsKey)
-        self.isLocked = self.hasPin
+        self.isLocked = (SecurityManager.readPinHashFromKeychain(key: "app_security_pin_hash") != nil)
     }
 
     var hasPin: Bool {
@@ -50,7 +52,10 @@ final class SecurityManager: ObservableObject {
     }
 
     func verifyPin(_ pin: String) -> Bool {
-        guard let savedHash = getPinHash() else { return true }
+        guard let savedHash = getPinHash() else {
+            isLocked = false
+            return true
+        }
         let inputHash = sha256(pin)
         let isValid = (inputHash == savedHash)
         if isValid {
@@ -63,13 +68,27 @@ final class SecurityManager: ObservableObject {
         deletePinHash()
         isBiometryEnabled = false
         isLocked = false
+        isAuthenticating = false
         objectWillChange.send()
     }
 
-    func authenticateWithBiometry() {
-        guard isBiometryEnabled, hasPin else { return }
+    func emergencyReset() {
+        deletePinHash()
+        isBiometryEnabled = false
+        isLocked = false
+        isAuthenticating = false
+        UserDefaults.standard.removeObject(forKey: biometryDefaultsKey)
+        objectWillChange.send()
+    }
+
+    func authenticateWithBiometry() async {
+        guard isBiometryEnabled, hasPin, !isAuthenticating, isLocked else { return }
+
+        isAuthenticating = true
+        defer { isAuthenticating = false }
 
         let context = LAContext()
+        context.localizedCancelTitle = "Ввести PIN-код"
         var error: NSError?
 
         guard context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &error) else {
@@ -77,12 +96,14 @@ final class SecurityManager: ObservableObject {
         }
 
         let reason = "Разблокируйте приложение с помощью \(biometryTitle)"
-        context.evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, localizedReason: reason) { [weak self] success, _ in
+
+        do {
+            let success = try await context.evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, localizedReason: reason)
             if success {
-                Task { @MainActor in
-                    self?.isLocked = false
-                }
+                self.isLocked = false
             }
+        } catch {
+            // Обработка отмены пользователем или системного прерывания без краша
         }
     }
 
@@ -113,9 +134,13 @@ final class SecurityManager: ObservableObject {
     }
 
     private func getPinHash() -> String? {
+        Self.readPinHashFromKeychain(key: pinKeychainKey)
+    }
+
+    private static func readPinHashFromKeychain(key: String) -> String? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
-            kSecAttrAccount as String: pinKeychainKey,
+            kSecAttrAccount as String: key,
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne
         ]

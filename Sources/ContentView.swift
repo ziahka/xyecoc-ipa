@@ -63,27 +63,28 @@ struct ContentView: View {
     @StateObject private var accounts = AccountStore()
     @ObservedObject private var security = SecurityManager.shared
     @Environment(\.scenePhase) private var scenePhase
+    @State private var previousPhase: ScenePhase = .active
 
-    @AppStorage("app_theme") private var selectedTheme: AppTheme = .cyan
-    @AppStorage("app_language") private var selectedLanguage: AppLanguage = .ru
+    @AppStorage("app_theme") private var selectedTheme: AppTheme = .cyan[cite: 1, 3]
+    @AppStorage("app_language") private var selectedLanguage: AppLanguage = .ru[cite: 3]
 
     var body: some View {
         ZStack {
             Group {
                 if let active = accounts.activeEmail {
                     NavigationStack {
-                        InboxView(accounts: accounts)
+                        InboxView(accounts: accounts)[cite: 1, 3]
                     }
-                    .id(active)
+                    .id(active)[cite: 1, 3]
                 } else {
                     LoginFlowView {
-                        await accounts.onLoggedIn()
+                        await accounts.onLoggedIn()[cite: 3]
                     }
                 }
             }
-            .tint(selectedTheme.color)
+            .tint(selectedTheme.color)[cite: 3]
             .environment(\.locale, Locale(identifier: selectedLanguage.rawValue))
-            .task { await accounts.syncActiveCache() }
+            .task { await accounts.syncActiveCache() }[cite: 3]
 
             if security.isLocked {
                 LockOverlayView {
@@ -95,12 +96,10 @@ struct ContentView: View {
         }
         .animation(.easeInOut(duration: 0.25), value: security.isLocked)
         .onChange(of: scenePhase) { newPhase in
-            if newPhase == .active {
+            if previousPhase == .background && newPhase == .active {
                 security.lockAppIfNeeded()
-                if security.isBiometryEnabled && security.isLocked {
-                    security.authenticateWithBiometry()
-                }
             }
+            previousPhase = newPhase
         }
     }
 }
@@ -180,13 +179,17 @@ struct LoginView: View {
             .controlSize(.large)
             .disabled(vm.isLoading || email.isEmpty || password.isEmpty)
 
-            Spacer(); Spacer()
+            Spacer()
+            Spacer()
         }
         .padding(28)
     }
 
-    private func inputField<Content: View>(systemImage: String, placeholder: String,
-                                           @ViewBuilder content: () -> Content) -> some View {
+    private func inputField<Content: View>(
+        systemImage: String,
+        placeholder: String,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
         HStack(spacing: 10) {
             Image(systemName: systemImage).foregroundStyle(.secondary).frame(width: 22)
             content()
@@ -249,8 +252,13 @@ struct TwoFactorView: View {
             Button("Назад") { vm.reset() }
                 .font(.footnote)
 
-            Spacer(); Spacer()
+            Spacer()
+            Spacer()
         }
         .padding(28)
     }
+}
+
+#Preview {
+    ContentView()
 }
