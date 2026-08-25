@@ -65,26 +65,26 @@ struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var previousPhase: ScenePhase = .active
 
-    @AppStorage("app_theme") private var selectedTheme: AppTheme = .cyan[cite: 1, 3]
-    @AppStorage("app_language") private var selectedLanguage: AppLanguage = .ru[cite: 3]
+    @AppStorage("app_theme") private var selectedTheme: AppTheme = .cyan
+    @AppStorage("app_language") private var selectedLanguage: AppLanguage = .ru
 
     var body: some View {
         ZStack {
             Group {
                 if let active = accounts.activeEmail {
                     NavigationStack {
-                        InboxView(accounts: accounts)[cite: 1, 3]
+                        InboxView(accounts: accounts)
                     }
-                    .id(active)[cite: 1, 3]
+                    .id(active)
                 } else {
                     LoginFlowView {
-                        await accounts.onLoggedIn()[cite: 3]
+                        await accounts.onLoggedIn()
                     }
                 }
             }
-            .tint(selectedTheme.color)[cite: 3]
-            .environment(\.locale, Locale(identifier: selectedLanguage.rawValue))
-            .task { await accounts.syncActiveCache() }[cite: 3]
+            .tint(selectedTheme.color)
+            .environment(\EnvironmentValues.locale, Locale(identifier: selectedLanguage.rawValue))
+            .task { await accounts.syncActiveCache() }
 
             if security.isLocked {
                 LockOverlayView {
