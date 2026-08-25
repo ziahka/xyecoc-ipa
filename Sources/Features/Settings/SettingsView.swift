@@ -117,6 +117,7 @@ final class SettingsViewModel: ObservableObject {
 
 struct SettingsView: View {
     @ObservedObject var accounts: AccountStore
+    @Environment(\.dismiss) private var dismiss
     @StateObject private var vm = SettingsViewModel()
     @ObservedObject private var security = SecurityManager.shared
 
@@ -137,15 +138,25 @@ struct SettingsView: View {
     @State private var pinError: String?
 
     var body: some View {
-        List {
-            accountSection
-            appearanceAndLangSection
-            securitySection
-            mailManagementSection
-            communitySection
-            appAndDestructiveSection
+        NavigationStack {
+            List {
+                accountSection
+                appearanceAndLangSection
+                securitySection
+                mailManagementSection
+                communitySection
+                appAndDestructiveSection
+            }
+            .navigationTitle("Настройки")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Готово") {
+                        dismiss()
+                    }
+                }
+            }
         }
-        .navigationTitle("Настройки")
         .task { await vm.load() }
         .sheet(isPresented: $showPasswordSheet) { ChangePasswordSheet(vm: vm) }
         .sheet(isPresented: $showReserveSheet) { ReserveEmailSheet(vm: vm) }
@@ -243,6 +254,7 @@ struct SettingsView: View {
         }
     }
 
+    @ViewBuilder
     private var securitySection: some View {
         Section("Безопасность устройства") {
             if security.hasPin {
@@ -256,8 +268,6 @@ struct SettingsView: View {
                 } label: {
                     Text("Удалить PIN-код")
                 }
-
-                Toggle("Использовать \(security.biometryTitle)", isOn: $security.isBiometryEnabled)
             } else {
                 Button("Установить PIN-код") {
                     resetPinFlow()
