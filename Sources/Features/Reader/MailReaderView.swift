@@ -1,87 +1,13 @@
-//
-//  MailReaderView.swift
-//  XyecocMail
-//
-//  Port of `ReaderScreen.kt` + `ReaderViewModel`. Loads details via `mail/view`,
-//  fetches the rendered HTML body from the CDN (cookie-authenticated in the
-//  repository), and renders it in a JS-disabled WKWebView. Marks the mail read
-//  in the local cache on open; the inbox refreshes via the `onChange` callback.
-//
-
 import SwiftUI
-import WebKit
+@preconcurrency import WebKit
 import UIKit
 
-// MARK: - ViewModel
-
-@MainActor
-final class ReaderViewModel: ObservableObject {
-
-    @Published var details: MailDetails?
-    @Published var html: String = ""
-    @Published var isLoading = false
-    @Published var folders: [Folder] = []
-    @Published var tags: [Tag] = []
-
-    private let repo = MailRepository()
-    private let db = MailDatabase.shared
-
-    func load(mailId: Int64) async {
-        isLoading = true
-        folders = await db.folders()
-        tags = await db.tags()
-
-        let response = await repo.fetchMailDetails(mailId: mailId)
-        if let d = response.mailDetails() {
-            details = d
-            let body = await repo.fetchMailBodyHtml(mailId: mailId)
-            if !body.isEmpty {
-                html = body
-            } else if let message = d.message, !message.isEmpty {
-                html = message
-            } else {
-                html = "<p style=\"font-family:sans-serif;font-size:16px;color:#333;line-height:1.5;\">\(d.snippet ?? "")</p>"
-            }
-            await db.setRead(mailId, true)
-        }
-        isLoading = false
-    }
-
-    func deleteCurrent() async {
-        guard let id = details?.id else { return }
-        let folder = await db.mail(id: id)?.folder
-        _ = await repo.performMailAction(mailId: id, action: "delete", folder: folder)
-    }
-
-    func markImportant() async {
-        guard let id = details?.id else { return }
-        _ = await repo.performMailAction(mailId: id, action: "important")
-    }
-
-    func move(toFolderId folderId: Int64) async {
-        guard let id = details?.id else { return }
-        _ = await repo.performMailAction(mailId: id, action: "move-to-folder", value: .int(folderId))
-    }
-
-    func blockSender() async {
-        guard let id = details?.id else { return }
-        _ = await repo.blockSender(mailId: id)
-    }
-
-    func report(_ type: String) async {
-        guard let id = details?.id else { return }
-        _ = await repo.reportViolation(mailId: id, type: type)
-    }
-}
-
-// MARK: - Screen
-
 struct MailReaderView: View {
-
     let mailId: Int64
     var onChange: () -> Void = {}
 
     @StateObject private var vm = ReaderViewModel()
+    @FocusState private var isReplyFocused: Bool
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
@@ -94,10 +20,19 @@ struct MailReaderView: View {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if let mail = vm.details {
                 VStack(spacing: 0) {
-                    headerCard(mail)
-                    ReaderWebView(html: styledHTML, isDark: colorScheme == .dark)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    attachmentsBar(mail)
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 14) {
+                            headerCard(mail)
+                            ReaderWebView(html: styledHTML, isDark: colorScheme == .dark)
+                                .frame(minHeight: 300)
+                            attachmentsBar(mail)
+                        }
+                    }
+                    .scrollDismissesKeyboard(.interactively)
+
+                    Divider()
+
+                    quickReplyBar
                 }
             } else {
                 Text("Не удалось загрузить письмо").foregroundStyle(.secondary)
@@ -121,8 +56,61 @@ struct MailReaderView: View {
         }
         .sheet(isPresented: $showFolderPicker) { folderPicker }
         .sheet(item: $composeSeed) { seed in ComposeView(seed: seed) }
+        .alert("Ошибка", isPresented: Binding(
+            get: { vm.errorMessage != nil },
+            set: { if !$0 { vm.errorMessage = nil } }
+        )) {
+            Button("OK", role: .cancel) { vm.errorMessage = nil }
+        } message: {
+            Text(vm.errorMessage ?? "")
+        }
         .task { await vm.load(mailId: mailId) }
         .onDisappear { onChange() }
+    }
+
+    private var quickReplyBar: some View {
+        HStack(alignment: .bottom, spacing: 10) {
+            TextField("Быстрый ответ…", text: $vm.quickReplyText, axis: .vertical)
+                .lineLimit(1...4)
+                .focused($isReplyFocused)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
+                .background(Color(.secondarySystemGroupedBackground))
+                .clipShape(RoundedRectangle(cornerRadius: 18))
+
+            Button {
+                Task {
+                    isReplyFocused = false
+                    let success = await vm.sendQuickReply()
+                    if success {
+                        onChange()
+                    }
+                }
+            } label: {
+                ZStack {
+                    Circle()
+                        .fill(vm.quickReplyText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                              ? Color.secondary.opacity(0.3)
+                              : Color.accentColor)
+                        .frame(width: 36, height: 36)
+
+                    if vm.isQuickReplying {
+                        ProgressView()
+                            .tint(.white)
+                    } else {
+                        Image(systemName: "paperplane.fill")
+                            .font(.system(size: 14, weight: .bold))
+                            .foregroundStyle(.white)
+                            .offset(x: -1, y: 1)
+                    }
+                }
+            }
+            .disabled(vm.quickReplyText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || vm.isQuickReplying)
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(Color(.systemBackground))
     }
 
     private var moreMenu: some View {
@@ -150,8 +138,6 @@ struct MailReaderView: View {
             Image(systemName: "ellipsis")
         }
     }
-
-    // MARK: - Reply / Forward seeds
 
     private func quotedBody(_ d: MailDetails) -> String {
         let header = "<b>От:</b> \(d.getDisplayNameSafe()) &lt;\(d.fromEmail ?? "")&gt;<br>"
@@ -256,7 +242,6 @@ struct MailReaderView: View {
         s.first.map { String($0).uppercased() } ?? "?"
     }
 
-    // Build the CDN attachment download URL (matches ReaderScreen.kt).
     private func attachmentURL(_ attach: Attachment) -> URL? {
         let token = KeychainManager.shared.getToken() ?? ""
         let datePart = String(attach.createdAt.split(separator: "T").first ?? "")
@@ -264,7 +249,6 @@ struct MailReaderView: View {
         return URL(string: path)
     }
 
-    // Themed HTML wrapper (ported from ReaderScreen.kt).
     private var styledHTML: String {
         let dark = colorScheme == .dark
         let textColor = dark ? "#E0E0E0" : "#212121"
@@ -286,8 +270,6 @@ struct MailReaderView: View {
     }
 }
 
-// MARK: - WKWebView wrapper
-
 struct ReaderWebView: UIViewRepresentable {
     let html: String
     let isDark: Bool
@@ -296,9 +278,8 @@ struct ReaderWebView: UIViewRepresentable {
 
     func makeUIView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
-        config.defaultWebpagePreferences.allowsContentJavaScript = false // untrusted mail HTML
+        config.defaultWebpagePreferences.allowsContentJavaScript = false
 
-        // Best-effort: authenticate inline CDN images with the token cookie.
         if let token = KeychainManager.shared.getToken(), !token.isEmpty,
            let cookie = HTTPCookie(properties: [
                 .domain: ".xyecoc.com", .path: "/",
@@ -316,7 +297,6 @@ struct ReaderWebView: UIViewRepresentable {
     }
 
     func updateUIView(_ webView: WKWebView, context: Context) {
-        // Only reload when the content actually changes (avoids flicker loops).
         guard context.coordinator.loadedHTML != html else { return }
         context.coordinator.loadedHTML = html
         webView.loadHTMLString(html, baseURL: URL(string: "https://cdn.xyecoc.com"))
@@ -325,7 +305,6 @@ struct ReaderWebView: UIViewRepresentable {
     final class Coordinator: NSObject, WKNavigationDelegate {
         var loadedHTML: String?
 
-        // Open tapped links in the system browser instead of inside the reader.
         func webView(_ webView: WKWebView,
                      decidePolicyFor navigationAction: WKNavigationAction,
                      decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
@@ -339,8 +318,6 @@ struct ReaderWebView: UIViewRepresentable {
         }
     }
 }
-
-// MARK: - MailDetails display helpers (kept out of Models.swift to avoid churn)
 
 extension MailDetails {
     func getDisplayNameSafe() -> String {

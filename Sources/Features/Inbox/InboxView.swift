@@ -1,21 +1,9 @@
-//
-//  InboxView.swift
-//  XyecocMail
-//
-//  Port of `InboxScreen.kt` + `InboxViewModel`. Offline-first: the list is
-//  driven from the local cache (`MailDatabase`) and reconciled by the repo's
-//  `fetchMails`. Includes pull-to-refresh, swipe actions, cursor pagination
-//  (via `last_mail_id`), search, folder navigation, a compose FAB, and a
-//  multi-account switcher.
-//
-
 import SwiftUI
 
 // MARK: - ViewModel
 
 @MainActor
 final class InboxViewModel: ObservableObject {
-
     @Published var mails: [MailItem] = []
     @Published var folders: [Folder] = []
     @Published var tags: [Tag] = []
@@ -119,7 +107,7 @@ final class InboxViewModel: ObservableObject {
     }
 }
 
-// MARK: - System folders (mirrors the Android drawer)
+// MARK: - System folders
 
 struct SystemFolder: Identifiable {
     let id: String
@@ -139,12 +127,13 @@ let systemFolders: [SystemFolder] = [
 // MARK: - Screen
 
 struct InboxView: View {
-
     @ObservedObject var accounts: AccountStore
     @StateObject private var vm = InboxViewModel()
 
     @State private var showCompose = false
     @State private var showAccounts = false
+    @State private var showSettings = false
+    @State private var composeSeed: ComposeSeed?
 
     private var searchBinding: Binding<String> {
         Binding(get: { vm.searchQuery }, set: { vm.onSearchChanged($0) })
@@ -164,23 +153,80 @@ struct InboxView: View {
                 NavigationLink {
                     MailReaderView(mailId: mail.id) { Task { await vm.reload() } }
                 } label: {
-                    MailRow(mail: mail)
+                    MailRowView(state: MailRowState(mail: mail))
                 }
                 .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 12))
-                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                    Button(role: .destructive) { vm.delete(mail) } label: {
+                .contextMenu {
+                    Button {
+                        composeSeed = makeReplySeed(for: mail)
+                    } label: {
+                        Label("Ответить", systemImage: "arrowshape.turn.up.left")
+                    }
+
+                    Button {
+                        Haptics.light()
+                        vm.setRead(mail, !mail.read)
+                    } label: {
+                        Label(
+                            mail.read ? "Отметить как непрочитанное" : "Отметить как прочитанное",
+                            systemImage: mail.read ? "envelope.badge" : "envelope.open"
+                        )
+                    }
+
+                    Button {
+                        Haptics.light()
+                        vm.toggleStar(mail)
+                    } label: {
+                        Label(
+                            mail.important ? "Убрать из избранного" : "В избранное",
+                            systemImage: mail.important ? "star.slash" : "star"
+                        )
+                    }
+
+                    if !mail.fromEmail.isEmpty {
+                        Button {
+                            UIPasteboard.general.string = mail.fromEmail
+                            Haptics.light()
+                        } label: {
+                            Label("Скопировать email отправителя", systemImage: "doc.on.doc")
+                        }
+                    }
+
+                    Divider()
+
+                    Button(role: .destructive) {
+                        Haptics.warning()
+                        vm.delete(mail)
+                    } label: {
                         Label("Удалить", systemImage: "trash")
                     }
-                    Button { vm.moveToSpam(mail) } label: {
+                }
+                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                    Button(role: .destructive) {
+                        Haptics.warning()
+                        vm.delete(mail)
+                    } label: {
+                        Label("Удалить", systemImage: "trash")
+                    }
+                    Button {
+                        Haptics.medium()
+                        vm.moveToSpam(mail)
+                    } label: {
                         Label("Спам", systemImage: "exclamationmark.octagon")
                     }.tint(.orange)
                 }
                 .swipeActions(edge: .leading, allowsFullSwipe: true) {
-                    Button { vm.setRead(mail, !mail.read) } label: {
+                    Button {
+                        Haptics.light()
+                        vm.setRead(mail, !mail.read)
+                    } label: {
                         Label(mail.read ? "Не прочитано" : "Прочитано",
                               systemImage: mail.read ? "envelope.badge" : "envelope.open")
                     }.tint(.blue)
-                    Button { vm.toggleStar(mail) } label: {
+                    Button {
+                        Haptics.light()
+                        vm.toggleStar(mail)
+                    } label: {
                         Label("Важное", systemImage: "star")
                     }.tint(.yellow)
                 }
@@ -210,53 +256,73 @@ struct InboxView: View {
         .sheet(isPresented: $showCompose, onDismiss: { Task { await vm.refresh() } }) {
             ComposeView()
         }
+        .sheet(item: $composeSeed, onDismiss: { Task { await vm.refresh() } }) { seed in
+            ComposeView(seed: seed)
+        }
         .sheet(isPresented: $showAccounts) {
             AccountSwitcherView(accounts: accounts)
         }
+        .sheet(isPresented: $showSettings) {
+            SettingsView(accounts: accounts)
+        }
     }
 
-    // MARK: - Compose FAB
+    private func makeReplySeed(for mail: MailItem) -> ComposeSeed {
+        let subject = mail.displaySubject()
+        let reSubject = subject.lowercased().hasPrefix("re:") ? subject : "Re: \(subject)"
+        let recipient = mail.fromEmail.isEmpty ? (mail.sender) : mail.fromEmail
+        return ComposeSeed(to: recipient, subject: reSubject, body: "")
+    }
 
     private var composeButton: some View {
-        Button { showCompose = true } label: {
+        Button {
+            Haptics.light()
+            showCompose = true
+        } label: {
             Image(systemName: "square.and.pencil")
                 .font(.title2.weight(.semibold))
                 .foregroundStyle(.white)
                 .frame(width: 58, height: 58)
-                .background(Color.brand, in: Circle())
+                .background(Color.accentColor, in: Circle())
                 .shadow(color: .black.opacity(0.2), radius: 8, y: 4)
         }
         .padding(20)
     }
 
     private var accountButton: some View {
-        Button { showAccounts = true } label: {
+        Button {
+            Haptics.light()
+            showAccounts = true
+        } label: {
             Text(activeInitial)
                 .font(.caption.bold())
                 .foregroundStyle(.white)
                 .frame(width: 30, height: 30)
-                .background(Color.brand, in: Circle())
+                .background(Color.accentColor, in: Circle())
         }
     }
-
-    // MARK: - Chips + menus
 
     private var folderChips: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
                 chip("Входящие", active: vm.currentFolder == "inbox" && !vm.filterUnreadOnly) {
+                    Haptics.light()
                     vm.filterUnreadOnly = false; vm.selectFolder("inbox")
                 }
                 chip("Непрочитанные", active: vm.filterUnreadOnly) {
+                    Haptics.light()
                     vm.filterUnreadOnly.toggle()
                 }
                 chip("Важные", active: vm.currentFolder == "important") {
+                    Haptics.light()
                     vm.selectFolder("important")
                 }
                 chip("Отправленные", active: vm.currentFolder == "sent") {
+                    Haptics.light()
                     vm.selectFolder("sent")
                 }
                 chip("Корзина", active: vm.currentFolder == "trash") {
+                    Haptics.light()
                     vm.selectFolder("trash")
                 }
             }
@@ -272,8 +338,8 @@ struct InboxView: View {
                 Text(title).font(.subheadline)
             }
             .padding(.horizontal, 14).padding(.vertical, 7)
-            .background(active ? Color.brand.opacity(0.2) : Color.secondary.opacity(0.12))
-            .foregroundStyle(active ? Color.brand : Color.primary)
+            .background(active ? Color.accentColor.opacity(0.2) : Color.secondary.opacity(0.12))
+            .foregroundStyle(active ? Color.accentColor : Color.primary)
             .clipShape(Capsule())
         }
         .buttonStyle(.plain)
@@ -283,13 +349,19 @@ struct InboxView: View {
         Menu {
             Section("Папки") {
                 ForEach(systemFolders) { f in
-                    Button { vm.selectFolder(f.id) } label: { Label(f.title, systemImage: f.icon) }
+                    Button {
+                        Haptics.light()
+                        vm.selectFolder(f.id)
+                    } label: { Label(f.title, systemImage: f.icon) }
                 }
             }
             if !vm.folders.isEmpty {
                 Section("Мои папки") {
                     ForEach(vm.folders) { f in
-                        Button { vm.selectFolder(f.name) } label: { Label(f.name, systemImage: "folder") }
+                        Button {
+                            Haptics.light()
+                            vm.selectFolder(f.name)
+                        } label: { Label(f.name, systemImage: "folder") }
                     }
                 }
             }
@@ -300,11 +372,19 @@ struct InboxView: View {
 
     private var overflowMenu: some View {
         Menu {
-            Button { vm.markAllRead() } label: {
+            Button {
+                Haptics.medium()
+                vm.markAllRead()
+            } label: {
                 Label("Прочитать все", systemImage: "envelope.open")
             }
-            Toggle(isOn: Binding(get: { vm.filterUnreadOnly },
-                                 set: { vm.filterUnreadOnly = $0 })) {
+            Toggle(isOn: Binding(
+                get: { vm.filterUnreadOnly },
+                set: {
+                    Haptics.light()
+                    vm.filterUnreadOnly = $0
+                }
+            )) {
                 Label("Только непрочитанные", systemImage: "envelope.badge")
             }
         } label: {
@@ -319,7 +399,10 @@ struct InboxView: View {
                 .foregroundStyle(.secondary)
             Text(vm.filterUnreadOnly ? "Нет непрочитанных писем" : "В этой папке нет писем")
                 .foregroundStyle(.secondary)
-            Button { Task { await vm.refresh() } } label: {
+            Button {
+                Haptics.light()
+                Task { await vm.refresh() }
+            } label: {
                 Label("Обновить", systemImage: "arrow.clockwise")
             }
         }
@@ -327,59 +410,88 @@ struct InboxView: View {
     }
 }
 
-// MARK: - Account switcher
+// MARK: - Shared Views
 
 struct AccountSwitcherView: View {
     @ObservedObject var accounts: AccountStore
     @Environment(\.dismiss) private var dismiss
+    @State private var showSettings = false
+    @State private var showAddAccount = false
 
     var body: some View {
         NavigationStack {
             List {
-                Section("Аккаунты (\(accounts.emails.count)/\(AccountStore.maxAccounts))") {
+                Section("Почтовые ящики") {
                     ForEach(accounts.emails, id: \.self) { email in
-                        Button {
-                            Task { await accounts.setActive(email); dismiss() }
-                        } label: {
-                            HStack(spacing: 12) {
-                                Text(String(email.first.map { String($0).uppercased() } ?? "?"))
-                                    .font(.subheadline.bold()).foregroundStyle(.white)
-                                    .frame(width: 34, height: 34)
-                                    .background(Color.brand, in: Circle())
-                                Text(email).foregroundStyle(.primary).lineLimit(1)
-                                Spacer()
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(email)
+                                    .font(.subheadline)
+                                    .fontWeight(email == accounts.activeEmail ? .bold : .regular)
                                 if email == accounts.activeEmail {
-                                    Image(systemName: "checkmark.circle.fill").foregroundStyle(Color.brand)
+                                    Text("Активен")
+                                        .font(.caption2)
+                                        .foregroundStyle(Color.accentColor)
                                 }
                             }
+                            Spacer()
+                            if email == accounts.activeEmail {
+                                Image(systemName: "checkmark")
+                                    .foregroundStyle(Color.accentColor)
+                            }
                         }
-                        .swipeActions {
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            Task {
+                                await accounts.setActive(email)
+                                dismiss()
+                            }
+                        }
+                        .swipeActions(edge: .trailing) {
                             Button(role: .destructive) {
                                 Task { await accounts.remove(email) }
-                            } label: { Label("Удалить", systemImage: "trash") }
+                            } label: {
+                                Label("Удалить", systemImage: "trash")
+                            }
                         }
+                    }
+
+                    Button {
+                        showAddAccount = true
+                    } label: {
+                        Label("Добавить аккаунт", systemImage: "plus")
                     }
                 }
 
                 Section {
-                    NavigationLink {
-                        AddAccountView(accounts: accounts)
+                    Button {
+                        showSettings = true
                     } label: {
-                        Label("Добавить аккаунт", systemImage: "plus.circle")
-                    }
-                    .disabled(!accounts.canAddAccount)
-
-                    Button(role: .destructive) {
-                        Task { await accounts.logoutActive() }
-                    } label: {
-                        Label("Выйти из текущего", systemImage: "rectangle.portrait.and.arrow.right")
+                        Label("Настройки приложения", systemImage: "gearshape")
                     }
                 }
             }
-            .navigationTitle("Почтовые ящики")
+            .navigationTitle("Учетные записи")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .confirmationAction) { Button("Готово") { dismiss() } }
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Закрыть") {
+                        dismiss()
+                    }
+                }
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        showSettings = true
+                    } label: {
+                        Image(systemName: "gearshape")
+                    }
+                }
+            }
+            .sheet(isPresented: $showSettings) {
+                SettingsView(accounts: accounts)
+            }
+            .sheet(isPresented: $showAddAccount) {
+                AddAccountView(accounts: accounts)
             }
         }
     }
@@ -392,64 +504,6 @@ struct AddAccountView: View {
         LoginFlowView { await accounts.onLoggedIn() }
             .navigationTitle("Новый аккаунт")
             .navigationBarTitleDisplayMode(.inline)
-    }
-}
-
-// MARK: - Row (MailListItem)
-
-struct MailRow: View {
-    let mail: MailItem
-
-    private var avatarLetter: String {
-        guard let c = mail.displayName().first else { return "?" }
-        return String(c).uppercased()
-    }
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            ZStack {
-                Circle()
-                    .fill(mail.read ? Color.secondary.opacity(0.3) : Color.brand)
-                    .frame(width: 44, height: 44)
-                Text(avatarLetter).font(.headline).foregroundStyle(.white)
-            }
-
-            VStack(alignment: .leading, spacing: 3) {
-                HStack {
-                    Text(mail.displayName())
-                        .font(.subheadline)
-                        .fontWeight(mail.read ? .regular : .bold)
-                        .lineLimit(1)
-                    Spacer()
-                    Text(DateUtils.formatDate(mail.createdAt))
-                        .font(.caption).foregroundStyle(.secondary)
-                    if !mail.read {
-                        Circle().fill(Color.brand).frame(width: 8, height: 8)
-                    }
-                }
-                Text(mail.displaySubject())
-                    .font(.subheadline)
-                    .fontWeight(mail.read ? .regular : .semibold)
-                    .lineLimit(1)
-                HStack(spacing: 6) {
-                    if !mail.snippet.isEmpty {
-                        Text(mail.snippet)
-                            .font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                    }
-                    Spacer()
-                    if mail.hasAttachments {
-                        Image(systemName: "paperclip").font(.caption2).foregroundStyle(.secondary)
-                    }
-                    if mail.important {
-                        Image(systemName: "star.fill").font(.caption2).foregroundStyle(.yellow)
-                    }
-                }
-                if let tag = mail.tagName, !tag.isEmpty {
-                    TagBadge(name: tag, colorHex: mail.tagColor)
-                }
-            }
-        }
-        .padding(.vertical, 2)
     }
 }
 

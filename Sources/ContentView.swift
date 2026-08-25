@@ -1,15 +1,6 @@
-//
-//  ContentView.swift
-//  XyecocMail
-//
-//  Root routing + authentication UI. Shows the login flow when no account is
-//  active, otherwise the inbox for the active account. Supports adding another
-//  account (up to 15) via a presented login sheet.
-//
-
 import SwiftUI
 
-// MARK: - Auth state machine (mirrors Kotlin sealed class AuthUiState)
+// MARK: - Auth state machine
 
 enum AuthState: Equatable {
     case idle
@@ -22,7 +13,6 @@ enum AuthState: Equatable {
 
 @MainActor
 final class AuthViewModel: ObservableObject {
-
     @Published var state: AuthState = .idle
     private let repo = AuthRepository()
 
@@ -60,7 +50,6 @@ final class AuthViewModel: ObservableObject {
         }
     }
 
-    /// Return to the login form (e.g. "Назад" from the 2FA screen).
     func reset() { state = .idle }
 
     func clearError() {
@@ -71,26 +60,51 @@ final class AuthViewModel: ObservableObject {
 // MARK: - Root
 
 struct ContentView: View {
-
     @StateObject private var accounts = AccountStore()
+    @ObservedObject private var security = SecurityManager.shared
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var previousPhase: ScenePhase = .active
+
+    @AppStorage("app_theme") private var selectedTheme: AppTheme = .cyan
+    @AppStorage("app_language") private var selectedLanguage: AppLanguage = .ru
 
     var body: some View {
-        Group {
-            if let active = accounts.activeEmail {
-                NavigationStack {
-                    InboxView(accounts: accounts)
+        ZStack {
+            Group {
+                if let active = accounts.activeEmail {
+                    NavigationStack {
+                        InboxView(accounts: accounts)
+                    }
+                    .id(active)
+                } else {
+                    LoginFlowView {
+                        await accounts.onLoggedIn()
+                    }
                 }
-                .id(active)   // rebuild the inbox (fresh cache) when switching accounts
-            } else {
-                LoginFlowView { await accounts.onLoggedIn() }
+            }
+            .tint(selectedTheme.color)
+            .environment(\EnvironmentValues.locale, Locale(identifier: selectedLanguage.rawValue))
+            .task { await accounts.syncActiveCache() }
+
+            if security.isLocked {
+                LockOverlayView {
+                    await accounts.logoutActive()
+                }
+                .transition(.opacity)
+                .zIndex(999)
             }
         }
-        .tint(.brand)
-        .task { await accounts.syncActiveCache() }
+        .animation(.easeInOut(duration: 0.25), value: security.isLocked)
+        .onChange(of: scenePhase) { newPhase in
+            if previousPhase == .background && newPhase == .active {
+                security.lockAppIfNeeded()
+            }
+            previousPhase = newPhase
+        }
     }
 }
 
-// MARK: - Login flow wrapper (login ↔ 2FA)
+// MARK: - Login flow wrapper
 
 struct LoginFlowView: View {
     var onAuthenticated: () async -> Void
@@ -165,13 +179,17 @@ struct LoginView: View {
             .controlSize(.large)
             .disabled(vm.isLoading || email.isEmpty || password.isEmpty)
 
-            Spacer(); Spacer()
+            Spacer()
+            Spacer()
         }
         .padding(28)
     }
 
-    private func inputField<Content: View>(systemImage: String, placeholder: String,
-                                           @ViewBuilder content: () -> Content) -> some View {
+    private func inputField<Content: View>(
+        systemImage: String,
+        placeholder: String,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
         HStack(spacing: 10) {
             Image(systemName: systemImage).foregroundStyle(.secondary).frame(width: 22)
             content()
@@ -234,7 +252,8 @@ struct TwoFactorView: View {
             Button("Назад") { vm.reset() }
                 .font(.footnote)
 
-            Spacer(); Spacer()
+            Spacer()
+            Spacer()
         }
         .padding(28)
     }

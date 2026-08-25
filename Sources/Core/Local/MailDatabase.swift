@@ -1,28 +1,9 @@
-//
-//  MailDatabase.swift
-//  XyecocMail
-//
-//  Offline-first local cache — the iOS analogue of Room (`AppDatabase` + DAOs).
-//  Implemented as an `actor` over Codable in-memory collections persisted to a
-//  single JSON snapshot on disk. No external SPM dependency (no GRDB/SQLite
-//  ceremony); the actor gives race-free access from the async repository.
-//
-//  Room parity notes:
-//   - Mails are keyed globally by `id` (Room's @PrimaryKey), `folder` is a
-//     column, so moving folders and cross-folder dedupe work as in Room.
-//   - `pruneNotInList` / `pruneNotInListRange` reproduce the two diff-delete
-//     queries used by `MailRepository.fetchMails` to drop stale rows.
-//   - Reads return sorted snapshots matching the DAO `ORDER BY` clauses
-//     (mails: id DESC; folders/tags: name ASC).
-//
-
 import Foundation
 
 actor MailDatabase {
-
     static let shared = MailDatabase()
 
-    // MARK: - In-memory state (mirrors the Room tables)
+    // MARK: - In-memory state
 
     private var mailsById: [Int64: MailItem] = [:]
     private var folderList: [Folder] = []
@@ -39,7 +20,6 @@ actor MailDatabase {
     private let appDir: URL
     private var activeAccount: String
 
-    /// Per-account cache file so mailboxes never collide.
     private var cacheURL: URL {
         appDir.appendingPathComponent("cache-\(Self.sanitize(activeAccount)).json")
     }
@@ -59,13 +39,20 @@ actor MailDatabase {
         let appDir = dir.appendingPathComponent("XyecocMail", isDirectory: true)
         try? FileManager.default.createDirectory(at: appDir, withIntermediateDirectories: true)
         self.appDir = appDir
-        self.activeAccount = KeychainManager.shared.activeEmail() ?? "default"
-        load()
+        let account = KeychainManager.shared.activeEmail() ?? "default"
+        self.activeAccount = account
+
+        let targetURL = appDir.appendingPathComponent("cache-\(Self.sanitize(account)).json")
+        if let data = try? Data(contentsOf: targetURL),
+           let snapshot = try? JSONDecoder().decode(Snapshot.self, from: data) {
+            self.mailsById = Dictionary(uniqueKeysWithValues: snapshot.mails.map { ($0.id, $0) })
+            self.folderList = snapshot.folders
+            self.tagList = snapshot.tags
+        }
     }
 
     // MARK: - Per-account switching
 
-    /// Point the cache at a different account, reloading its isolated snapshot.
     func activate(account: String) {
         guard account != activeAccount else { return }
         activeAccount = account
@@ -75,7 +62,6 @@ actor MailDatabase {
         load()
     }
 
-    /// Delete a removed account's on-disk cache file.
     func deleteCache(forAccount account: String) {
         let url = appDir.appendingPathComponent("cache-\(Self.sanitize(account)).json")
         try? FileManager.default.removeItem(at: url)
@@ -98,7 +84,6 @@ actor MailDatabase {
 
     // MARK: - MailDao
 
-    /// SELECT * FROM mails WHERE folder = ? ORDER BY id DESC
     func mails(folder: String) -> [MailItem] {
         mailsById.values
             .filter { $0.folder == folder }
@@ -107,7 +92,6 @@ actor MailDatabase {
 
     func mail(id: Int64) -> MailItem? { mailsById[id] }
 
-    /// @Insert(onConflict = REPLACE)
     func upsertMails(_ mails: [MailItem]) {
         for mail in mails { mailsById[mail.id] = mail }
         persist()
@@ -115,38 +99,44 @@ actor MailDatabase {
 
     func setRead(_ id: Int64, _ read: Bool) {
         guard var m = mailsById[id] else { return }
-        m.read = read; mailsById[id] = m; persist()
+        m.read = read
+        mailsById[id] = m
+        persist()
     }
 
     func setImportant(_ id: Int64, _ important: Bool) {
         guard var m = mailsById[id] else { return }
-        m.important = important; mailsById[id] = m; persist()
+        m.important = important
+        mailsById[id] = m
+        persist()
     }
 
     func move(_ id: Int64, toFolder folder: String) {
         guard var m = mailsById[id] else { return }
-        m.folder = folder; mailsById[id] = m; persist()
+        m.folder = folder
+        mailsById[id] = m
+        persist()
     }
 
-    func delete(_ id: Int64) { mailsById[id] = nil; persist() }
+    func delete(_ id: Int64) {
+        mailsById[id] = nil
+        persist()
+    }
 
     func delete(ids: [Int64]) {
         for id in ids { mailsById[id] = nil }
         persist()
     }
 
-    /// DELETE FROM mails WHERE folder = ?
     func clearFolder(_ folder: String) {
         mailsById = mailsById.filter { $0.value.folder != folder }
         persist()
     }
 
-    /// SELECT COUNT(*) FROM mails WHERE folder = ? AND read = 0
     func unreadCount(folder: String) -> Int {
         mailsById.values.filter { $0.folder == folder && !$0.read }.count
     }
 
-    /// DELETE FROM mails WHERE folder = ? AND id >= :minId AND id NOT IN (:fetchedIds)
     func pruneNotInList(folder: String, minId: Int64, fetchedIds: [Int64]) {
         let keep = Set(fetchedIds)
         mailsById = mailsById.filter { _, m in
@@ -155,7 +145,6 @@ actor MailDatabase {
         persist()
     }
 
-    /// DELETE FROM mails WHERE folder = ? AND id >= :minId AND id <= :maxId AND id NOT IN (:fetchedIds)
     func pruneNotInListRange(folder: String, minId: Int64, maxId: Int64, fetchedIds: [Int64]) {
         let keep = Set(fetchedIds)
         mailsById = mailsById.filter { _, m in
@@ -166,7 +155,6 @@ actor MailDatabase {
 
     // MARK: - FolderDao
 
-    /// SELECT * FROM folders ORDER BY name ASC
     func folders() -> [Folder] { folderList.sorted { $0.name < $1.name } }
 
     func upsertFolders(_ folders: [Folder]) {
@@ -186,7 +174,6 @@ actor MailDatabase {
 
     // MARK: - TagDao
 
-    /// SELECT * FROM tags ORDER BY name ASC
     func tags() -> [Tag] { tagList.sorted { $0.name < $1.name } }
 
     func upsertTags(_ tags: [Tag]) {
@@ -206,7 +193,6 @@ actor MailDatabase {
 
     // MARK: - Global
 
-    /// db.clearAllTables() — called on login/logout for a fresh account.
     func clearAll() {
         mailsById.removeAll()
         folderList.removeAll()

@@ -91,6 +91,7 @@ struct ComposeView: View {
 
     private let senderEmail = KeychainManager.shared.getEmail() ?? ""
     @State private var selectedSender: String
+    private let bottomMarkerID = "bottomID"
 
     init(seed: ComposeSeed = ComposeSeed()) {
         _to = State(initialValue: seed.to)
@@ -102,22 +103,34 @@ struct ComposeView: View {
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
-                    if !vm.aliases.isEmpty { senderPicker }
-                    field(title: "Кому", systemImage: "at", text: $to,
-                          placeholder: "email@example.com (через запятую)")
-                    field(title: "Тема", systemImage: "text.alignleft", text: $subject,
-                          placeholder: "Тема письма")
-                    formattingBar
-                    bodyEditor
-                    if !vm.signature.isEmpty { signaturePreview }
-                    attachmentButtons
-                    if !attachments.isEmpty { attachmentList }
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 14) {
+                        if !vm.aliases.isEmpty { senderPicker }
+                        field(title: "Кому", systemImage: "at", text: $to,
+                              placeholder: "email@example.com (через запятую)")
+                        field(title: "Тема", systemImage: "text.alignleft", text: $subject,
+                              placeholder: "Тема письма")
+                        formattingBar
+                        bodyEditor
+                        if !vm.signature.isEmpty { signaturePreview }
+                        attachmentButtons
+                        if !attachments.isEmpty { attachmentList }
+
+                        // невидимый маркер для автоскролла вниз при вводе
+                        Color.clear
+                            .frame(height: 1)
+                            .id(bottomMarkerID)
+                    }
+                    .padding(16)
                 }
-                .padding(16)
+                .scrollDismissesKeyboard(.interactively)
+                .onChange(of: bodyText) { _ in
+                    withAnimation(.easeOut(duration: 0.15)) {
+                        proxy.scrollTo(bottomMarkerID, anchor: .bottom)
+                    }
+                }
             }
-            .scrollDismissesKeyboard(.interactively)
             .background(Color(.systemGroupedBackground))
             .navigationTitle(replyMode ? "Ответ на письмо" : "Новое письмо")
             .navigationBarTitleDisplayMode(.inline)
@@ -323,16 +336,32 @@ struct ComposeView: View {
     // MARK: - Actions
 
     private func sendMessage() async {
-        if to.isEmpty { errorText = "Укажите хотя бы одного получателя"; return }
+        if to.isEmpty {
+            Haptics.error()
+            errorText = "Укажите хотя бы одного получателя"
+            return
+        }
         let error = await vm.send(recipients: to, subject: subject, body: bodyText,
-                                  attachments: attachments, isDraft: false)
-        if error == nil { dismiss() } else { showSendDisabled = true }
+                                attachments: attachments, isDraft: false)
+        if error == nil {
+            Haptics.success()
+            dismiss()
+        } else {
+            Haptics.error()
+            showSendDisabled = true
+        }
     }
 
     private func saveDraft() async {
         let error = await vm.send(recipients: to, subject: subject, body: bodyText,
-                                  attachments: attachments, isDraft: true)
-        if error == nil { dismiss() } else { errorText = error }
+                                attachments: attachments, isDraft: true)
+        if error == nil {
+            Haptics.light()
+            dismiss()
+        } else {
+            Haptics.error()
+            errorText = error
+        }
     }
 
     private func loadSelectedPhotos() {
