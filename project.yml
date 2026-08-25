@@ -20,6 +20,7 @@ targets:
         CFBundleDisplayName: Xyecoc Mail
         CFBundleShortVersionString: "1.0.0"
         CFBundleVersion: "1"
+        NSFaceIDUsageDescription: "Используется для быстрой и безопасной разблокировки почтового ящика."
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
