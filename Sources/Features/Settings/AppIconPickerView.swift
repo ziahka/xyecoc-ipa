@@ -8,7 +8,7 @@ struct AppIconPickerView: View {
         Section("Иконка приложения") {
             ForEach(AppIconTheme.allCases) { theme in
                 Button {
-                    Haptics.selection()
+                    Haptics.light()
                     Task {
                         await iconManager.setIconTheme(theme)
                     }
