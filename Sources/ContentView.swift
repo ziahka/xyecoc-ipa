@@ -67,6 +67,7 @@ struct ContentView: View {
 
     @AppStorage("app_theme") private var selectedTheme: AppTheme = .cyan
     @AppStorage("app_language") private var selectedLanguage: AppLanguage = .ru
+    @AppStorage("app_appearance") private var appearance: AppAppearance = .system
 
     var body: some View {
         ZStack {
@@ -83,6 +84,7 @@ struct ContentView: View {
                 }
             }
             .tint(selectedTheme.color)
+            .preferredColorScheme(appearance.colorScheme)
             .environment(\EnvironmentValues.locale, Locale(identifier: selectedLanguage.rawValue))
             .task { await accounts.syncActiveCache() }
 

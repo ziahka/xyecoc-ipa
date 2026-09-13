@@ -14,6 +14,9 @@ final class SettingsViewModel: ObservableObject {
     @Published var folders: [Folder] = []
     @Published var tags: [Tag] = []
     @Published var isLoading: Bool = false
+    @Published var storageUsed: Double = 0
+    @Published var storageTotal: Int64 = 0
+    @Published var localCacheSize: String = "…"
 
     private let repo = SettingsRepository()
     private let db = MailDatabase.shared
@@ -31,6 +34,8 @@ final class SettingsViewModel: ObservableObject {
             self.signatureReplyEnabled = resp.signatureReply ?? true
             self.signatureNewEnabled = resp.signatureNew ?? true
             self.is2FAEnabled = (resp.twoFactor == "1" || resp.twoFactor == "true")
+            self.storageUsed = resp.storageUsed ?? 0
+            self.storageTotal = resp.storageTotal ?? 0
         }
 
         let aliasResp = await repo.fetchAddresses()
@@ -113,6 +118,16 @@ final class SettingsViewModel: ObservableObject {
         let resp = await repo.deleteAccount(password: password)
         return resp.isSuccess()
     }
+
+    func computeCacheSize() async {
+        let size = await db.totalCacheSizeBytes()
+        localCacheSize = DateUtils.formatFileSize(Int64(size))
+    }
+
+    func clearLocalCache() async {
+        await db.clearAll()
+        localCacheSize = DateUtils.formatFileSize(0)
+    }
 }
 
 // MARK: - Root Settings Screen
@@ -125,6 +140,7 @@ struct SettingsView: View {
 
     @AppStorage("app_theme") private var selectedTheme: AppTheme = .cyan
     @AppStorage("app_language") private var selectedLanguage: AppLanguage = .ru
+    @AppStorage("app_appearance") private var appearance: AppAppearance = .system
 
     @State private var showPasswordSheet = false
     @State private var showReserveSheet = false
@@ -147,6 +163,7 @@ struct SettingsView: View {
                 AppIconPickerView()
                 securitySection
                 mailManagementSection
+                storageAndCacheSection
                 communitySection
                 appAndDestructiveSection
             }
@@ -242,6 +259,12 @@ struct SettingsView: View {
                 }
             }
 
+            Picker("Оформление", selection: $appearance) {
+                ForEach(AppAppearance.allCases) { a in
+                    Text(a.title).tag(a)
+                }
+            }
+
             Picker("Язык интерфейса", selection: $selectedLanguage) {
                 ForEach(AppLanguage.allCases) { lang in
                     Text(lang.title).tag(lang)
@@ -299,6 +322,38 @@ struct SettingsView: View {
                 Label("Папки и теги", systemImage: "folder.badge.gearshape")
             }
         }
+    }
+
+    private var storageAndCacheSection: some View {
+        Section("Хранилище") {
+            if vm.storageTotal > 0 {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Text("Занято")
+                        Spacer()
+                        Text("\(String(format: "%.1f", vm.storageUsed)) / \(DateUtils.formatFileSize(vm.storageTotal))")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
+                    ProgressView(value: vm.storageUsed, total: Double(vm.storageTotal))
+                        .tint(vm.storageUsed / Double(vm.storageTotal) > 0.85 ? .red : .accentColor)
+                }
+                .padding(.vertical, 4)
+            }
+
+            HStack {
+                Label("Локальный кэш", systemImage: "internaldrive")
+                Spacer()
+                Text(vm.localCacheSize)
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
+
+            Button(role: .destructive) {
+                Task { await vm.clearLocalCache() }
+            } label: {
+                Label("Очистить кэш", systemImage: "trash.circle")
+            }
+        }
+        .task { await vm.computeCacheSize() }
     }
 
     private var communitySection: some View {

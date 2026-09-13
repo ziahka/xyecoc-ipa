@@ -96,10 +96,16 @@ struct ComposeView: View {
     @State private var showFileImporter = false
     @State private var errorText: String?
     @State private var showSendDisabled = false
+    @State private var showDraftAlert = false
+    @State private var autoSaveTask: Task<Void, Never>?
 
     private let senderEmail = KeychainManager.shared.getEmail() ?? ""
     @State private var selectedSender: String
     private let bottomMarkerID = "bottomID"
+
+    private var hasContent: Bool {
+        !to.isEmpty || !subject.isEmpty || !bodyText.isEmpty || !attachments.isEmpty
+    }
 
     init(seed: ComposeSeed = ComposeSeed()) {
         _to = State(initialValue: seed.to)
@@ -164,6 +170,28 @@ struct ComposeView: View {
         } message: {
             Text("Для защиты сервиса от спама отправка по умолчанию отключена для новых аккаунтов. Свяжитесь с поддержкой, чтобы включить её.")
         }
+        .alert("Сохранить черновик?", isPresented: $showDraftAlert) {
+            Button("Сохранить") { Task { await saveDraft() } }
+            Button("Удалить", role: .destructive) { dismiss() }
+            Button("Отмена", role: .cancel) { }
+        } message: {
+            Text("У вас есть несохранённые изменения.")
+        }
+        .onAppear { startAutoSave() }
+        .onDisappear { autoSaveTask?.cancel() }
+    }
+
+    private func startAutoSave() {
+        autoSaveTask?.cancel()
+        autoSaveTask = Task {
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 15_000_000_000)
+                guard !Task.isCancelled, hasContent, !vm.isSending else { continue }
+                _ = await vm.send(recipients: to, subject: subject, body: bodyText,
+                                  attachments: attachments, isDraft: true,
+                                  isReply: replyMode, from: selectedSender)
+            }
+        }
     }
 
     // MARK: - Toolbar
@@ -171,7 +199,14 @@ struct ComposeView: View {
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
         ToolbarItem(placement: .cancellationAction) {
-            Button("Отмена") { dismiss() }
+            Button("Отмена") {
+                autoSaveTask?.cancel()
+                if hasContent {
+                    showDraftAlert = true
+                } else {
+                    dismiss()
+                }
+            }
         }
         ToolbarItem(placement: .navigationBarTrailing) {
             Button {

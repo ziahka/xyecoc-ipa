@@ -242,6 +242,16 @@ actor MailDatabase {
         try? data.write(to: htmlCacheURL, options: .atomic)
     }
 
+    // MARK: - Cache size
+
+    func totalCacheSizeBytes() -> Int {
+        var total = 0
+        for url in [cacheURL, htmlCacheURL] {
+            total += (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int) ?? 0
+        }
+        return total
+    }
+
     // MARK: - Global
 
     func clearAll() {

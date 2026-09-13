@@ -4,6 +4,7 @@ import UIKit
 
 struct MailReaderView: View {
     let mailId: Int64
+    var siblingIds: [Int64] = []
     var onChange: () -> Void = {}
 
     @StateObject private var vm = ReaderViewModel()
@@ -15,6 +16,24 @@ struct MailReaderView: View {
     @State private var composeSeed: ComposeSeed?
     @State private var shareItems: [Any]? = nil
     @State private var webViewHeight: CGFloat = 300
+    @State private var currentMailId: Int64
+    @State private var dragOffset: CGFloat = 0
+
+    init(mailId: Int64, siblingIds: [Int64] = [], onChange: @escaping () -> Void = {}) {
+        self.mailId = mailId
+        self.siblingIds = siblingIds
+        self.onChange = onChange
+        _currentMailId = State(initialValue: mailId)
+    }
+
+    private var hasPrev: Bool {
+        guard let idx = siblingIds.firstIndex(of: currentMailId) else { return false }
+        return idx > 0
+    }
+    private var hasNext: Bool {
+        guard let idx = siblingIds.firstIndex(of: currentMailId) else { return false }
+        return idx < siblingIds.count - 1
+    }
 
     var body: some View {
         Group {
@@ -34,8 +53,14 @@ struct MailReaderView: View {
 
                     Divider()
 
+                    actionBar
+
+                    Divider()
+
                     quickReplyBar
                 }
+                .offset(x: dragOffset)
+                .gesture(swipeGesture)
             } else {
                 Text("Не удалось загрузить письмо").foregroundStyle(.secondary)
             }
@@ -43,17 +68,6 @@ struct MailReaderView: View {
         .navigationTitle(vm.details?.getDisplaySubjectSafe() ?? "Письмо")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItem(placement: .navigationBarTrailing) {
-                Button { composeSeed = replySeed() } label: {
-                    Image(systemName: "arrowshape.turn.up.left")
-                }
-                .disabled(vm.details == nil)
-            }
-            ToolbarItem(placement: .navigationBarTrailing) {
-                Button {
-                    Task { await vm.deleteCurrent(); dismiss() }
-                } label: { Image(systemName: "trash") }
-            }
             ToolbarItem(placement: .navigationBarTrailing) { moreMenu }
         }
         .sheet(isPresented: $showFolderPicker) { folderPicker }
@@ -74,8 +88,80 @@ struct MailReaderView: View {
         } message: {
             Text(vm.errorMessage ?? "")
         }
-        .task { await vm.load(mailId: mailId) }
+        .task { await vm.load(mailId: currentMailId) }
+        .onChange(of: currentMailId) { newId in
+            webViewHeight = 300
+            Task { await vm.load(mailId: newId) }
+        }
         .onDisappear { onChange() }
+    }
+
+    // MARK: - Action Bar (Apple Mail pattern)
+
+    private var actionBar: some View {
+        HStack(spacing: 0) {
+            actionButton(icon: "arrowshape.turn.up.left.fill", label: "Ответить") {
+                composeSeed = replySeed()
+            }
+            actionButton(icon: "arrowshape.turn.up.right.fill", label: "Переслать") {
+                composeSeed = forwardSeed()
+            }
+            actionButton(icon: "star", label: "Важное") {
+                Task { await vm.markImportant() }
+            }
+            actionButton(icon: "folder.fill", label: "Папка") {
+                showFolderPicker = true
+            }
+            actionButton(icon: "trash.fill", label: "Удалить") {
+                Task { await vm.deleteCurrent(); dismiss() }
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    private func actionButton(icon: String, label: String, action: @escaping () -> Void) -> some View {
+        Button {
+            Haptics.light()
+            action()
+        } label: {
+            VStack(spacing: 2) {
+                Image(systemName: icon).font(.body)
+                Text(label).font(.caption2)
+            }
+            .frame(maxWidth: .infinity)
+            .foregroundStyle(Color.accentColor)
+        }
+        .buttonStyle(.plain)
+    }
+
+    // MARK: - Swipe navigation
+
+    private var swipeGesture: some Gesture {
+        DragGesture(minimumDistance: 50)
+            .onChanged { value in
+                dragOffset = value.translation.width * 0.3
+            }
+            .onEnded { value in
+                let threshold: CGFloat = 80
+                withAnimation(.easeOut(duration: 0.2)) { dragOffset = 0 }
+                if value.translation.width < -threshold, hasNext {
+                    navigateNext()
+                } else if value.translation.width > threshold, hasPrev {
+                    navigatePrev()
+                }
+            }
+    }
+
+    private func navigateNext() {
+        guard let idx = siblingIds.firstIndex(of: currentMailId), idx < siblingIds.count - 1 else { return }
+        Haptics.light()
+        currentMailId = siblingIds[idx + 1]
+    }
+
+    private func navigatePrev() {
+        guard let idx = siblingIds.firstIndex(of: currentMailId), idx > 0 else { return }
+        Haptics.light()
+        currentMailId = siblingIds[idx - 1]
     }
 
     private var quickReplyBar: some View {

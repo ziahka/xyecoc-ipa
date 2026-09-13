@@ -21,6 +21,14 @@ final class InboxViewModel: ObservableObject {
     @Published var isSelecting = false
     @Published var selectedIds: Set<Int64> = []
 
+    // Search scope
+    @Published var searchScope: SearchScope = .all
+
+    // Polling
+    @Published var unreadBadge: Int = 0
+    private var pollingTask: Task<Void, Never>?
+    private static let pollingInterval: UInt64 = 30_000_000_000 // 30 sec
+
     private let repo = MailRepository()
     private let db = MailDatabase.shared
     private var didStart = false
@@ -34,6 +42,25 @@ final class InboxViewModel: ObservableObject {
         didStart = true
         await reload()
         await refresh()
+        startPolling()
+    }
+
+    func startPolling() {
+        pollingTask?.cancel()
+        pollingTask = Task {
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: Self.pollingInterval)
+                guard !Task.isCancelled else { return }
+                _ = await repo.fetchMails(folder: "inbox")
+                await reload()
+                unreadBadge = await db.unreadCount(folder: "inbox")
+            }
+        }
+    }
+
+    func stopPolling() {
+        pollingTask?.cancel()
+        pollingTask = nil
     }
 
     func reload() async {
@@ -42,14 +69,31 @@ final class InboxViewModel: ObservableObject {
         if q.isEmpty {
             mails = all
         } else {
-            mails = all.filter {
-                $0.displayName().range(of: q, options: .caseInsensitive) != nil ||
-                $0.displaySubject().range(of: q, options: .caseInsensitive) != nil ||
-                $0.snippet.range(of: q, options: .caseInsensitive) != nil
+            mails = all.filter { mail in
+                switch searchScope {
+                case .all:
+                    return mail.displayName().range(of: q, options: .caseInsensitive) != nil
+                        || mail.displaySubject().range(of: q, options: .caseInsensitive) != nil
+                        || mail.snippet.range(of: q, options: .caseInsensitive) != nil
+                case .sender:
+                    return mail.displayName().range(of: q, options: .caseInsensitive) != nil
+                        || mail.fromEmail.range(of: q, options: .caseInsensitive) != nil
+                case .subject:
+                    return mail.displaySubject().range(of: q, options: .caseInsensitive) != nil
+                case .unread:
+                    return !mail.read && (
+                        mail.displayName().range(of: q, options: .caseInsensitive) != nil
+                        || mail.displaySubject().range(of: q, options: .caseInsensitive) != nil)
+                case .attachments:
+                    return mail.hasAttachments && (
+                        mail.displayName().range(of: q, options: .caseInsensitive) != nil
+                        || mail.displaySubject().range(of: q, options: .caseInsensitive) != nil)
+                }
             }
         }
         folders = await db.folders()
         tags = await db.tags()
+        unreadBadge = await db.unreadCount(folder: "inbox")
     }
 
     func selectFolder(_ folder: String) {
@@ -233,12 +277,23 @@ let systemFolders: [SystemFolder] = [
     .init(id: "trash", title: "Корзина", icon: "trash")
 ]
 
+// MARK: - Search scope
+
+enum SearchScope: String, CaseIterable {
+    case all = "Все"
+    case sender = "От кого"
+    case subject = "Тема"
+    case unread = "Непрочитанные"
+    case attachments = "С вложениями"
+}
+
 // MARK: - Screen
 
 struct InboxView: View {
     @ObservedObject var accounts: AccountStore
     @StateObject private var vm = InboxViewModel()
     @ObservedObject private var network = NetworkMonitor.shared
+    @Environment(\.scenePhase) private var scenePhase
 
     @State private var showCompose = false
     @State private var showAccounts = false
@@ -273,6 +328,11 @@ struct InboxView: View {
             .navigationTitle(vm.isSelecting ? "\(vm.selectedIds.count) выбрано" : folderTitle)
             .navigationBarTitleDisplayMode(.inline)
             .searchable(text: searchBinding, prompt: "Поиск в почте")
+            .searchScopes($vm.searchScope) {
+                ForEach(SearchScope.allCases, id: \.self) { scope in
+                    Text(scope.rawValue).tag(scope)
+                }
+            }
             .refreshable { await vm.refresh() }
             .safeAreaInset(edge: .top) {
                 VStack(spacing: 0) {
@@ -317,6 +377,14 @@ struct InboxView: View {
             }
             .task { await vm.startIfNeeded() }
             .onAppear { Task { await vm.reload() } }
+            .onDisappear { vm.stopPolling() }
+            .onChange(of: vm.searchScope) { _ in
+                Task { await vm.reload() }
+            }
+            .onChange(of: scenePhase) { phase in
+                if phase == .active { vm.startPolling() }
+                else if phase == .background { vm.stopPolling() }
+            }
             .onReceive(network.restored) {
                 Task { await vm.refresh() }
             }
@@ -353,7 +421,8 @@ struct InboxView: View {
     @ViewBuilder
     private func normalRow(_ mail: MailItem) -> some View {
         NavigationLink {
-            MailReaderView(mailId: mail.id) { Task { await vm.reload() } }
+            MailReaderView(mailId: mail.id,
+                           siblingIds: vm.displayedMails.map(\.id)) { Task { await vm.reload() } }
         } label: {
             MailRowView(state: MailRowState(mail: mail))
         }
@@ -537,7 +606,8 @@ struct InboxView: View {
     private var folderChips: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
-                chip("Входящие", active: vm.currentFolder == "inbox" && !vm.filterUnreadOnly) {
+                chip("Входящие", active: vm.currentFolder == "inbox" && !vm.filterUnreadOnly,
+                     badge: vm.unreadBadge > 0 && vm.currentFolder != "inbox" ? vm.unreadBadge : nil) {
                     Haptics.light()
                     vm.filterUnreadOnly = false; vm.selectFolder("inbox")
                 }
@@ -563,11 +633,19 @@ struct InboxView: View {
         .background(.bar)
     }
 
-    private func chip(_ title: String, active: Bool, action: @escaping () -> Void) -> some View {
+    private func chip(_ title: String, active: Bool, badge: Int? = nil, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack(spacing: 4) {
                 if active { Image(systemName: "checkmark").font(.caption2) }
                 Text(title).font(.subheadline)
+                if let badge, badge > 0 {
+                    Text("\(badge)")
+                        .font(.caption2.bold())
+                        .padding(.horizontal, 5).padding(.vertical, 1)
+                        .background(Color.accentColor)
+                        .foregroundStyle(.white)
+                        .clipShape(Capsule())
+                }
             }
             .padding(.horizontal, 14).padding(.vertical, 7)
             .background(active ? Color.accentColor.opacity(0.2) : Color.secondary.opacity(0.12))
