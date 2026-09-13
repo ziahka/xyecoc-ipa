@@ -4,7 +4,7 @@
 
 **Нативный, быстрый и современный почтовый клиент для сервиса xyecoc.com на SwiftUI.**
 
-[English Version](../README.md) | [Русский](#-о-проекте) | [📚 Документация в Wiki](https://github.com/ziahka/xyecoc-ipa/wiki) | [VirusTotal](https://www.virustotal.com/gui/file/6ec829a77fed2279daf55e93943488425339cee7860b71051f1b4ac3be53db7a)
+[English Version](../README.md) | [Русский](#-о-проекте) | [📚 Документация в Wiki](https://github.com/ziahka/xyecoc-ipa/wiki) | [VirusTotal](https://www.virustotal.com/gui/file/f9ad2ee044d3f26f42c33ddd5392007cd19ea12aaa54781003a21888f9a57a47?nocache=1)
 
 
 ---
