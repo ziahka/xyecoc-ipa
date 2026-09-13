@@ -69,13 +69,28 @@ struct AppIconPickerView: View {
 
     private func loadThumbnail(for theme: AppIconTheme) -> UIImage? {
         let baseName = theme.iconName ?? "AppIcon"
+
+        // 1. Try loading from Sources/Icons/ bundle resources (@2x, @3x, 1x)
+        for suffix in ["@3x", "@2x", ""] {
+            if let path = Bundle.main.path(forResource: "\(baseName)\(suffix)", ofType: "png") {
+                return UIImage(contentsOfFile: path)
+            }
+        }
+
+        // 2. Try asset catalog (works for the primary AppIcon)
         if let image = UIImage(named: baseName) {
             return image
         }
-        if let path = Bundle.main.path(forResource: "\(baseName)@2x", ofType: "png") ??
-                      Bundle.main.path(forResource: baseName, ofType: "png") {
-            return UIImage(contentsOfFile: path)
+
+        // 3. For standard icon: read the compiled app icon
+        if theme == .standard, let icons = Bundle.main.infoDictionary?["CFBundleIcons"] as? [String: Any],
+           let primary = icons["CFBundlePrimaryIcon"] as? [String: Any],
+           let files = primary["CFBundleIconFiles"] as? [String],
+           let name = files.first,
+           let image = UIImage(named: name) {
+            return image
         }
+
         return nil
     }
 
@@ -86,7 +101,7 @@ struct AppIconPickerView: View {
                 .fill(fallbackBackground(for: theme))
                 .frame(width: 44, height: 44)
 
-            Image(systemName: "water.waves")
+            Image(systemName: "envelope.fill")
                 .font(.system(size: 18, weight: .bold))
                 .foregroundStyle(fallbackSymbolColor(for: theme))
         }
