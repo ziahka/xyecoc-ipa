@@ -38,6 +38,38 @@ targets:
               CFBundleIconFiles:
                 - AppIcon-Minimalist
               UIPrerenderedIcon: false
+            AppIcon-Obsidian:
+              CFBundleIconFiles:
+                - AppIcon-Obsidian
+              UIPrerenderedIcon: false
+            AppIcon-Cyberpunk:
+              CFBundleIconFiles:
+                - AppIcon-Cyberpunk
+              UIPrerenderedIcon: false
+            AppIcon-Sunset:
+              CFBundleIconFiles:
+                - AppIcon-Sunset
+              UIPrerenderedIcon: false
+            AppIcon-Emerald:
+              CFBundleIconFiles:
+                - AppIcon-Emerald
+              UIPrerenderedIcon: false
+            AppIcon-Crimson:
+              CFBundleIconFiles:
+                - AppIcon-Crimson
+              UIPrerenderedIcon: false
+            AppIcon-Gold:
+              CFBundleIconFiles:
+                - AppIcon-Gold
+              UIPrerenderedIcon: false
+            AppIcon-Aurora:
+              CFBundleIconFiles:
+                - AppIcon-Aurora
+              UIPrerenderedIcon: false
+            AppIcon-Candy:
+              CFBundleIconFiles:
+                - AppIcon-Candy
+              UIPrerenderedIcon: false
         # NOTE: App Transport Security is left at its secure defaults.
         # Endpoints are HTTPS/WSS, so no NSAppTransportSecurity exceptions
         # are required. Do NOT add NSAllowsArbitraryLoads.
