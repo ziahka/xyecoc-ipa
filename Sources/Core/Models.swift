@@ -87,6 +87,15 @@ private extension KeyedDecodingContainer {
         if let s: String = optional(key), let i = Int64(s) { return i }
         return def
     }
+    /// Optional variant of `flexBool` — nil when the key is absent or unparseable.
+    func flexBoolOptional(_ key: Key) -> Bool? {
+        if let b: Bool = optional(key) { return b }
+        if let i: Int = optional(key) { return i != 0 }
+        if let s: String = optional(key) {
+            return s == "1" || s.caseInsensitiveCompare("true") == .orderedSame
+        }
+        return nil
+    }
 }
 
 struct MailItem: Codable, Identifiable, Equatable {
@@ -170,13 +179,18 @@ struct Attachment: Codable, Identifiable, Equatable {
 
     init(id: Int64 = 0, fileName: String = "", fileSize: Int64 = 0,
          fileExtension: String = "", content: String? = nil, createdAt: String = "") {
-        self.id = id; self.fileName = fileName; self.fileSize = fileSize
-        self.fileExtension = fileExtension; self.content = content; self.createdAt = createdAt
+        self.id = (id != 0) ? id : (Int64(Date().timeIntervalSince1970 * 1000) &+ Int64.random(in: 100...99999))
+        self.fileName = fileName
+        self.fileSize = fileSize
+        self.fileExtension = fileExtension
+        self.content = content
+        self.createdAt = createdAt
     }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        id            = c.flexInt64(.id)
+        let decodedId = c.flexInt64(.id)
+        id            = (decodedId != 0) ? decodedId : (Int64(Date().timeIntervalSince1970 * 1000) &+ Int64.random(in: 100...99999))
         fileName      = c.value(.fileName, "")
         fileSize      = c.flexInt64(.fileSize)
         fileExtension = c.value(.fileExtension, "")
@@ -305,6 +319,32 @@ struct UserAccount: Codable, Equatable {
     var reserveEmail: String? = nil
     var deletedAt: String? = nil
     var role: Int = 1
+
+    enum CodingKeys: String, CodingKey {
+        case email, token, signature, role
+        case firstName = "first_name"
+        case lastName = "last_name"
+        case signatureReply = "signature_reply"
+        case signatureNew = "signature_new"
+        case twoFactor = "two_factor"
+        case reserveEmail = "reserve_email"
+        case deletedAt = "deleted_at"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        email          = c.value(.email, "")
+        token          = c.value(.token, "")
+        firstName      = c.value(.firstName, "")
+        lastName       = c.value(.lastName, "")
+        signature      = c.value(.signature, "")
+        signatureReply = c.flexBool(.signatureReply, true)
+        signatureNew   = c.flexBool(.signatureNew, true)
+        twoFactor      = c.flexBool(.twoFactor)
+        reserveEmail   = c.optional(.reserveEmail)
+        deletedAt      = c.optional(.deletedAt)
+        role           = Int(c.flexInt64(.role, 1))
+    }
 }
 
 struct SecurityInfo: Codable, Equatable {
@@ -482,9 +522,15 @@ struct ApiResponse: Decodable {
         firstName      = try? c.decodeIfPresent(String.self, forKey: .firstName) ?? nil
         lastName       = try? c.decodeIfPresent(String.self, forKey: .lastName) ?? nil
         signature      = try? c.decodeIfPresent(String.self, forKey: .signature) ?? nil
-        signatureReply = try? c.decodeIfPresent(Bool.self, forKey: .signatureReply) ?? nil
-        signatureNew   = try? c.decodeIfPresent(Bool.self, forKey: .signatureNew) ?? nil
-        twoFactor      = try? c.decodeIfPresent(String.self, forKey: .twoFactor) ?? nil
+        signatureReply = c.flexBoolOptional(.signatureReply)
+        signatureNew   = c.flexBoolOptional(.signatureNew)
+        if let s: String = (try? c.decodeIfPresent(String.self, forKey: .twoFactor)) ?? nil {
+            twoFactor = s
+        } else if let b = c.flexBoolOptional(.twoFactor) {
+            twoFactor = b ? "1" : "0"
+        } else {
+            twoFactor = nil
+        }
         reserveEmail   = try? c.decodeIfPresent(String.self, forKey: .reserveEmail) ?? nil
         deletedAt      = try? c.decodeIfPresent(String.self, forKey: .deletedAt) ?? nil
         storageUsed    = try? c.decodeIfPresent(Double.self, forKey: .storageUsed) ?? nil

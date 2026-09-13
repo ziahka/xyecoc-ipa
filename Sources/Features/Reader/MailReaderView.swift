@@ -13,6 +13,8 @@ struct MailReaderView: View {
     @Environment(\.openURL) private var openURL
     @State private var showFolderPicker = false
     @State private var composeSeed: ComposeSeed?
+    @State private var shareItems: [Any]? = nil
+    @State private var webViewHeight: CGFloat = 300
 
     var body: some View {
         Group {
@@ -23,8 +25,8 @@ struct MailReaderView: View {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 14) {
                             headerCard(mail)
-                            ReaderWebView(html: styledHTML, isDark: colorScheme == .dark)
-                                .frame(minHeight: 300)
+                            ReaderWebView(html: styledHTML, isDark: colorScheme == .dark, dynamicHeight: $webViewHeight)
+                                .frame(height: max(webViewHeight, 150))
                             attachmentsBar(mail)
                         }
                     }
@@ -56,6 +58,14 @@ struct MailReaderView: View {
         }
         .sheet(isPresented: $showFolderPicker) { folderPicker }
         .sheet(item: $composeSeed) { seed in ComposeView(seed: seed) }
+        .sheet(isPresented: Binding(
+            get: { shareItems != nil },
+            set: { if !$0 { shareItems = nil } }
+        )) {
+            if let items = shareItems {
+                ShareSheet(activityItems: items)
+            }
+        }
         .alert("Ошибка", isPresented: Binding(
             get: { vm.errorMessage != nil },
             set: { if !$0 { vm.errorMessage = nil } }
@@ -131,6 +141,14 @@ struct MailReaderView: View {
             Button { Task { await vm.blockSender() } } label: {
                 Label("Заблокировать отправителя", systemImage: "hand.raised")
             }
+            Divider()
+            Button { exportAsImage() } label: {
+                Label("Поделиться как изображение (PNG)", systemImage: "photo")
+            }
+            Button { exportAsPDF() } label: {
+                Label("Экспортировать в PDF", systemImage: "doc.richtext")
+            }
+            Divider()
             Button(role: .destructive) { Task { await vm.report("spam") } } label: {
                 Label("Пожаловаться на спам", systemImage: "exclamationmark.octagon")
             }
@@ -167,11 +185,11 @@ struct MailReaderView: View {
             Text(mail.getDisplaySubjectSafe())
                 .font(.title3).fontWeight(.bold)
             HStack(spacing: 12) {
-                ZStack {
-                    Circle().fill(Color.brand.opacity(0.25)).frame(width: 44, height: 44)
-                    Text(initial(mail.getDisplayNameSafe()))
-                        .font(.headline).foregroundStyle(Color.brand)
-                }
+                AvatarView(
+                    email: mail.fromEmail ?? mail.sender ?? "",
+                    displayName: mail.getDisplayNameSafe(),
+                    size: 44
+                )
                 VStack(alignment: .leading, spacing: 1) {
                     Text(mail.getDisplayNameSafe()).fontWeight(.semibold)
                     Text(mail.fromEmail ?? "").font(.caption).foregroundStyle(.secondary)
@@ -222,7 +240,7 @@ struct MailReaderView: View {
         NavigationStack {
             List(vm.folders) { folder in
                 Button {
-                    Task { await vm.move(toFolderId: folder.id) }
+                    Task { await vm.move(toFolder: folder) }
                     showFolderPicker = false
                 } label: {
                     Label(folder.name, systemImage: "folder")
@@ -238,15 +256,25 @@ struct MailReaderView: View {
         }
     }
 
-    private func initial(_ s: String) -> String {
-        s.first.map { String($0).uppercased() } ?? "?"
-    }
-
     private func attachmentURL(_ attach: Attachment) -> URL? {
         let token = KeychainManager.shared.getToken() ?? ""
         let datePart = String(attach.createdAt.split(separator: "T").first ?? "")
         let path = "https://cdn.xyecoc.com/data/attachments/mails/\(datePart)/\(attach.id).\(attach.fileExtension)?token=\(token)"
         return URL(string: path)
+    }
+
+    private func exportAsImage() {
+        guard let details = vm.details else { return }
+        if let image = EmailExportService.shared.renderToImage(details: details, bodyText: vm.html) {
+            shareItems = [image]
+        }
+    }
+
+    private func exportAsPDF() {
+        guard let details = vm.details else { return }
+        if let pdfURL = EmailExportService.shared.renderToPDF(details: details, bodyText: vm.html) {
+            shareItems = [pdfURL]
+        }
     }
 
     private var styledHTML: String {
@@ -258,9 +286,9 @@ struct MailReaderView: View {
         <!DOCTYPE html><html><head>\
         <meta name="viewport" content="width=device-width, initial-scale=1.0">\
         <style>\
-        body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; color: \(textColor); \
-        background-color: \(bgColor); margin: 16px; padding: 0; line-height: 1.6; \
-        font-size: 16px; word-break: break-word; }\
+        html, body { margin: 0; padding: 16px; background-color: \(bgColor); color: \(textColor); \
+        font-family: -apple-system, BlinkMacSystemFont, sans-serif; font-size: 16px; line-height: 1.6; \
+        word-break: break-word; }\
         img { max-width: 100% !important; height: auto !important; border-radius: 8px; }\
         table { max-width: 100% !important; }\
         a { color: \(linkColor); text-decoration: underline; }\
@@ -273,37 +301,60 @@ struct MailReaderView: View {
 struct ReaderWebView: UIViewRepresentable {
     let html: String
     let isDark: Bool
+    @Binding var dynamicHeight: CGFloat
 
-    func makeCoordinator() -> Coordinator { Coordinator() }
+    func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
 
     func makeUIView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
-        config.defaultWebpagePreferences.allowsContentJavaScript = false
-
-        if let token = KeychainManager.shared.getToken(), !token.isEmpty,
-           let cookie = HTTPCookie(properties: [
-                .domain: ".xyecoc.com", .path: "/",
-                .name: "authorization", .value: token
-           ]) {
-            config.websiteDataStore.httpCookieStore.setCookie(cookie)
-        }
-
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = context.coordinator
         webView.isOpaque = false
         webView.backgroundColor = .clear
         webView.scrollView.backgroundColor = .clear
+        webView.scrollView.isScrollEnabled = false
+        webView.scrollView.bounces = false
         return webView
     }
 
     func updateUIView(_ webView: WKWebView, context: Context) {
+        context.coordinator.parent = self
         guard context.coordinator.loadedHTML != html else { return }
         context.coordinator.loadedHTML = html
-        webView.loadHTMLString(html, baseURL: URL(string: "https://cdn.xyecoc.com"))
+
+        let baseURL = URL(string: "https://cdn.xyecoc.com")
+        if let token = KeychainManager.shared.getToken(), !token.isEmpty,
+           let cookie = HTTPCookie(properties: [
+                .domain: ".xyecoc.com", .path: "/",
+                .name: "authorization", .value: token
+           ]) {
+            webView.configuration.websiteDataStore.httpCookieStore.setCookie(cookie) {
+                DispatchQueue.main.async {
+                    webView.loadHTMLString(self.html, baseURL: baseURL)
+                }
+            }
+        } else {
+            webView.loadHTMLString(html, baseURL: baseURL)
+        }
     }
 
     final class Coordinator: NSObject, WKNavigationDelegate {
+        var parent: ReaderWebView
         var loadedHTML: String?
+
+        init(parent: ReaderWebView) {
+            self.parent = parent
+        }
+
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation?) {
+            webView.evaluateJavaScript("Math.max(document.body.scrollHeight, document.documentElement.scrollHeight)") { result, _ in
+                if let height = result as? CGFloat, height > 0 {
+                    DispatchQueue.main.async {
+                        self.parent.dynamicHeight = height
+                    }
+                }
+            }
+        }
 
         func webView(_ webView: WKWebView,
                      decidePolicyFor navigationAction: WKNavigationAction,

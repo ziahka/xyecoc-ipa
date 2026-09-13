@@ -21,15 +21,21 @@ final class ReaderViewModel: ObservableObject {
         folders = await db.folders()
         tags = await db.tags()
 
+        // Show cached HTML instantly while we fetch fresh data.
+        if let cached = await db.cachedHtml(mailId: mailId) {
+            html = cached
+        }
+
         let response = await repo.fetchMailDetails(mailId: mailId)
         if let d = response.mailDetails() {
             details = d
             let body = await repo.fetchMailBodyHtml(mailId: mailId)
             if !body.isEmpty {
                 html = body
+                await db.cacheHtml(mailId: mailId, html: body)
             } else if let message = d.message, !message.isEmpty {
                 html = message
-            } else {
+            } else if html.isEmpty {
                 html = "<p style=\"font-family:sans-serif;font-size:16px;color:#333;line-height:1.5;\">\(d.snippet ?? "")</p>"
             }
             await db.setRead(mailId, true)
@@ -63,7 +69,7 @@ final class ReaderViewModel: ObservableObject {
         let respProfile = await settingsRepo.getProfile()
         if respProfile.isSuccess(),
            let profile = respProfile.decodeData(as: UserAccount.self),
-           !profile.signature.isEmpty {
+           !profile.signature.isEmpty, profile.signatureReply {
             fullMessage = "\(fullMessage)<br><br>\(profile.signature)"
         }
 
@@ -95,9 +101,9 @@ final class ReaderViewModel: ObservableObject {
         _ = await repo.performMailAction(mailId: id, action: "important")
     }
 
-    func move(toFolderId folderId: Int64) async {
+    func move(toFolder folder: Folder) async {
         guard let id = details?.id else { return }
-        _ = await repo.performMailAction(mailId: id, action: "move-to-folder", value: .int(folderId))
+        _ = await repo.performMailAction(mailId: id, action: "move-to-folder", value: .string(folder.name))
     }
 
     func blockSender() async {

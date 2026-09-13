@@ -11,6 +11,10 @@ Generated/
 # macOS
 .DS_Store
 
+# Secrets & local tool output
+.env
+.firecrawl/
+
 # Swift Package Manager (added in later milestones)
 .build/
 .swiftpm/

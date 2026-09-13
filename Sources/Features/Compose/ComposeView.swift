@@ -28,6 +28,8 @@ final class ComposeViewModel: ObservableObject {
 
     @Published var isSending = false
     @Published var signature = ""
+    @Published var signatureForReply = true
+    @Published var signatureForNew = true
     @Published var aliases: [AliasAddress] = []
 
     private let mailRepo = MailRepository()
@@ -36,6 +38,8 @@ final class ComposeViewModel: ObservableObject {
     func load() async {
         let profile = await settingsRepo.getProfile()
         if let sig = profile.signature, !sig.isEmpty { signature = sig }
+        signatureForReply = profile.signatureReply ?? true
+        signatureForNew = profile.signatureNew ?? true
         let addresses = await settingsRepo.fetchAddresses()
         if let list = addresses.addresses { aliases = list }
     }
@@ -45,15 +49,18 @@ final class ComposeViewModel: ObservableObject {
               subject: String,
               body: String,
               attachments: [Attachment],
-              isDraft: Bool) async -> String? {
+              isDraft: Bool,
+              isReply: Bool = false,
+              from: String? = nil) async -> String? {
         let users = recipients
             .split(separator: ",")
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
         if users.isEmpty { return "Укажите получателя" }
 
+        let useSignature = isReply ? signatureForReply : signatureForNew
         let fullBody: String
-        if !isDraft && !signature.isEmpty && !body.contains(signature) {
+        if !isDraft && useSignature && !signature.isEmpty && !body.contains(signature) {
             fullBody = "\(body)<br><br>\(signature)"
         } else {
             fullBody = body
@@ -64,7 +71,8 @@ final class ComposeViewModel: ObservableObject {
                                                subject: subject,
                                                messageHtml: fullBody,
                                                attachments: attachments,
-                                               isDraft: isDraft)
+                                               isDraft: isDraft,
+                                               from: from)
         isSending = false
         return response.isSuccess() ? nil : (response.message ?? "Ошибка при отправке письма")
     }
@@ -113,7 +121,7 @@ struct ComposeView: View {
                               placeholder: "Тема письма")
                         formattingBar
                         bodyEditor
-                        if !vm.signature.isEmpty { signaturePreview }
+                        if !vm.signature.isEmpty && (replyMode ? vm.signatureForReply : vm.signatureForNew) { signaturePreview }
                         attachmentButtons
                         if !attachments.isEmpty { attachmentList }
 
@@ -342,19 +350,26 @@ struct ComposeView: View {
             return
         }
         let error = await vm.send(recipients: to, subject: subject, body: bodyText,
-                                attachments: attachments, isDraft: false)
+                                attachments: attachments, isDraft: false,
+                                isReply: replyMode, from: selectedSender)
         if error == nil {
             Haptics.success()
             dismiss()
-        } else {
+        } else if let err = error {
             Haptics.error()
-            showSendDisabled = true
+            let lower = err.lowercased()
+            if lower.contains("недоступн") || lower.contains("disabled") || lower.contains("спам") || lower.contains("spam") {
+                showSendDisabled = true
+            } else {
+                errorText = err
+            }
         }
     }
 
     private func saveDraft() async {
         let error = await vm.send(recipients: to, subject: subject, body: bodyText,
-                                attachments: attachments, isDraft: true)
+                                attachments: attachments, isDraft: true,
+                                isReply: replyMode, from: selectedSender)
         if error == nil {
             Haptics.light()
             dismiss()
@@ -370,12 +385,14 @@ struct ComposeView: View {
         Task {
             for item in items {
                 if let data = try? await item.loadTransferable(type: Data.self) {
-                    let stamp = Int(Date().timeIntervalSince1970)
-                    let name = "photo_\(stamp)_\(attachments.count + 1).jpg"
+                    let stamp = Int64(Date().timeIntervalSince1970 * 1000) &+ Int64.random(in: 100...99999)
+                    let ext = item.supportedContentTypes.first?.preferredFilenameExtension ?? "jpg"
+                    let name = "photo_\(stamp).\(ext)"
                     attachments.append(Attachment(
+                        id: stamp,
                         fileName: name,
                         fileSize: Int64(data.count),
-                        fileExtension: "jpg",
+                        fileExtension: ext,
                         content: data.base64EncodedString()))
                 }
             }

@@ -45,9 +45,19 @@ actor MailDatabase {
         let targetURL = appDir.appendingPathComponent("cache-\(Self.sanitize(account)).json")
         if let data = try? Data(contentsOf: targetURL),
            let snapshot = try? JSONDecoder().decode(Snapshot.self, from: data) {
-            self.mailsById = Dictionary(uniqueKeysWithValues: snapshot.mails.map { ($0.id, $0) })
+            self.mailsById = Dictionary(snapshot.mails.map { ($0.id, $0) }, uniquingKeysWith: { _, latest in latest })
             self.folderList = snapshot.folders
             self.tagList = snapshot.tags
+        }
+
+        // Load HTML body cache
+        let htmlURL = appDir.appendingPathComponent("html-cache-\(Self.sanitize(account)).json")
+        if let hData = try? Data(contentsOf: htmlURL),
+           let dict = try? JSONDecoder().decode([String: String].self, from: hData) {
+            self.htmlCache = Dictionary(uniqueKeysWithValues: dict.compactMap { k, v in
+                guard let id = Int64(k) else { return nil }
+                return (id, v)
+            })
         }
     }
 
@@ -59,20 +69,30 @@ actor MailDatabase {
         mailsById.removeAll()
         folderList.removeAll()
         tagList.removeAll()
+        htmlCache.removeAll()
         load()
     }
 
     func deleteCache(forAccount account: String) {
         let url = appDir.appendingPathComponent("cache-\(Self.sanitize(account)).json")
         try? FileManager.default.removeItem(at: url)
+        let hUrl = appDir.appendingPathComponent("html-cache-\(Self.sanitize(account)).json")
+        try? FileManager.default.removeItem(at: hUrl)
+        if account == activeAccount {
+            mailsById.removeAll()
+            folderList.removeAll()
+            tagList.removeAll()
+            htmlCache.removeAll()
+        }
     }
 
     private func load() {
         guard let data = try? Data(contentsOf: cacheURL),
               let snapshot = try? JSONDecoder().decode(Snapshot.self, from: data) else { return }
-        mailsById = Dictionary(uniqueKeysWithValues: snapshot.mails.map { ($0.id, $0) })
+        mailsById = Dictionary(snapshot.mails.map { ($0.id, $0) }, uniquingKeysWith: { _, latest in latest })
         folderList = snapshot.folders
         tagList = snapshot.tags
+        loadHtmlCache()
     }
 
     private func persist() {
@@ -191,12 +211,45 @@ actor MailDatabase {
     func deleteTag(id: Int64) { tagList.removeAll { $0.id == id }; persist() }
     func clearTags() { tagList.removeAll(); persist() }
 
+    // MARK: - HTML body cache
+
+    private var htmlCache: [Int64: String] = [:]
+
+    func cachedHtml(mailId: Int64) -> String? { htmlCache[mailId] }
+
+    func cacheHtml(mailId: Int64, html: String) {
+        guard !html.isEmpty else { return }
+        htmlCache[mailId] = html
+        persistHtml()
+    }
+
+    private var htmlCacheURL: URL {
+        appDir.appendingPathComponent("html-cache-\(Self.sanitize(activeAccount)).json")
+    }
+
+    private func loadHtmlCache() {
+        guard let data = try? Data(contentsOf: htmlCacheURL),
+              let dict = try? JSONDecoder().decode([String: String].self, from: data) else { return }
+        htmlCache = Dictionary(uniqueKeysWithValues: dict.compactMap { k, v in
+            guard let id = Int64(k) else { return nil }
+            return (id, v)
+        })
+    }
+
+    private func persistHtml() {
+        let dict = Dictionary(uniqueKeysWithValues: htmlCache.map { (String($0.key), $0.value) })
+        guard let data = try? JSONEncoder().encode(dict) else { return }
+        try? data.write(to: htmlCacheURL, options: .atomic)
+    }
+
     // MARK: - Global
 
     func clearAll() {
         mailsById.removeAll()
         folderList.removeAll()
         tagList.removeAll()
+        htmlCache.removeAll()
         persist()
+        persistHtml()
     }
 }

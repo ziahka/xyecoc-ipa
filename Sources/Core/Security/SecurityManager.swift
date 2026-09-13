@@ -1,5 +1,6 @@
 import Foundation
 import CryptoKit
+import LocalAuthentication
 
 @MainActor
 final class SecurityManager: ObservableObject {
@@ -15,6 +16,51 @@ final class SecurityManager: ObservableObject {
 
     var hasPin: Bool {
         getPinHash() != nil
+    }
+
+    var isBiometricsAvailable: Bool {
+        let context = LAContext()
+        var error: NSError?
+        return context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &error)
+    }
+
+    var biometricType: String {
+        let context = LAContext()
+        _ = context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: nil)
+        switch context.biometryType {
+        case .faceID: return "Face ID"
+        case .touchID: return "Touch ID"
+        default: return "Биометрия"
+        }
+    }
+
+    var biometricIconName: String {
+        let context = LAContext()
+        _ = context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: nil)
+        switch context.biometryType {
+        case .faceID: return "faceid"
+        case .touchID: return "touchid"
+        default: return "lock.shield"
+        }
+    }
+
+    func authenticateWithBiometrics() async -> Bool {
+        guard isBiometricsAvailable else { return false }
+        let context = LAContext()
+        context.localizedCancelTitle = "Ввести PIN"
+        do {
+            let success = try await context.evaluatePolicy(
+                .deviceOwnerAuthenticationWithBiometrics,
+                localizedReason: "Разблокировка почтового ящика"
+            )
+            if success {
+                self.isLocked = false
+                return true
+            }
+            return false
+        } catch {
+            return false
+        }
     }
 
     func setPin(_ pin: String) -> Bool {

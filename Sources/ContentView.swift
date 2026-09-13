@@ -96,7 +96,7 @@ struct ContentView: View {
         }
         .animation(.easeInOut(duration: 0.25), value: security.isLocked)
         .onChange(of: scenePhase) { newPhase in
-            if previousPhase == .background && newPhase == .active {
+            if newPhase == .background || (previousPhase == .background && newPhase == .active) {
                 security.lockAppIfNeeded()
             }
             previousPhase = newPhase

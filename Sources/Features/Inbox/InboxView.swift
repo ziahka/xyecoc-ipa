@@ -12,6 +12,15 @@ final class InboxViewModel: ObservableObject {
     @Published var isRefreshing = false
     @Published var filterUnreadOnly = false
 
+    // Refresh throttle + toast
+    @Published var refreshToast: String?
+    private var lastRefreshDate: Date = .distantPast
+    private static let refreshCooldown: TimeInterval = 3
+
+    // Batch selection
+    @Published var isSelecting = false
+    @Published var selectedIds: Set<Int64> = []
+
     private let repo = MailRepository()
     private let db = MailDatabase.shared
     private var didStart = false
@@ -47,24 +56,64 @@ final class InboxViewModel: ObservableObject {
         guard folder != currentFolder else { return }
         currentFolder = folder
         filterUnreadOnly = false
+        exitSelection()
         Task { await reload(); await refresh() }
     }
 
+    private var searchTask: Task<Void, Never>?
+
     func onSearchChanged(_ q: String) {
         searchQuery = q
-        Task {
+        searchTask?.cancel()
+        searchTask = Task {
             await reload()
+            guard !Task.isCancelled else { return }
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            guard !Task.isCancelled else { return }
             _ = await repo.fetchMails(folder: currentFolder, searchText: q.isEmpty ? nil : q)
+            guard !Task.isCancelled else { return }
+            await reload()
+        }
+    }
+
+    func moveToTrash(_ mail: MailItem) {
+        withAnimation(.easeInOut(duration: 0.25)) {
+            mails.removeAll { $0.id == mail.id }
+        }
+        Task {
+            _ = await repo.performMailAction(mailId: mail.id, action: "move-to-folder",
+                                             value: .string("trash"), folder: currentFolder)
             await reload()
         }
     }
 
     func refresh() async {
+        let now = Date()
+        guard now.timeIntervalSince(lastRefreshDate) >= Self.refreshCooldown else {
+            showToast("Подождите пару секунд…")
+            return
+        }
+        lastRefreshDate = now
         isRefreshing = true
+        let oldCount = mails.count
         _ = await repo.fetchMails(folder: currentFolder,
                                   searchText: searchQuery.isEmpty ? nil : searchQuery)
         isRefreshing = false
         await reload()
+        let diff = mails.count - oldCount
+        if diff > 0 {
+            showToast("Новых писем: \(diff)")
+        } else {
+            showToast("Нет новых писем")
+        }
+    }
+
+    private func showToast(_ text: String) {
+        refreshToast = text
+        Task {
+            try? await Task.sleep(nanoseconds: 2_500_000_000)
+            if refreshToast == text { refreshToast = nil }
+        }
     }
 
     func loadMore() async {
@@ -105,6 +154,66 @@ final class InboxViewModel: ObservableObject {
     func markAllRead() {
         Task { _ = await repo.markAllRead(); await refresh() }
     }
+
+    // MARK: - Batch selection
+
+    func toggleSelection(for mail: MailItem) {
+        if selectedIds.contains(mail.id) {
+            selectedIds.remove(mail.id)
+        } else {
+            selectedIds.insert(mail.id)
+        }
+        if selectedIds.isEmpty { isSelecting = false }
+    }
+
+    func enterSelection(_ mail: MailItem) {
+        isSelecting = true
+        selectedIds = [mail.id]
+    }
+
+    func exitSelection() {
+        isSelecting = false
+        selectedIds.removeAll()
+    }
+
+    func selectAll() {
+        selectedIds = Set(displayedMails.map(\.id))
+    }
+
+    func batchDelete() {
+        let ids = Array(selectedIds)
+        guard !ids.isEmpty else { return }
+        withAnimation { mails.removeAll { ids.contains($0.id) } }
+        exitSelection()
+        Task {
+            _ = await repo.batchDeleteMails(mailIds: ids, folder: currentFolder)
+            await reload()
+        }
+    }
+
+    func batchMarkRead(_ read: Bool) {
+        let ids = Array(selectedIds)
+        exitSelection()
+        Task {
+            for id in ids {
+                _ = await repo.setReadStatus(mailId: id, read: read, folder: currentFolder)
+            }
+            await reload()
+        }
+    }
+
+    func batchMoveToTrash() {
+        let ids = Array(selectedIds)
+        withAnimation { mails.removeAll { ids.contains($0.id) } }
+        exitSelection()
+        Task {
+            for id in ids {
+                _ = await repo.performMailAction(mailId: id, action: "move-to-folder",
+                                                 value: .string("trash"), folder: currentFolder)
+            }
+            await reload()
+        }
+    }
 }
 
 // MARK: - System folders
@@ -129,6 +238,7 @@ let systemFolders: [SystemFolder] = [
 struct InboxView: View {
     @ObservedObject var accounts: AccountStore
     @StateObject private var vm = InboxViewModel()
+    @ObservedObject private var network = NetworkMonitor.shared
 
     @State private var showCompose = false
     @State private var showAccounts = false
@@ -148,123 +258,243 @@ struct InboxView: View {
     }
 
     var body: some View {
-        List {
-            ForEach(vm.displayedMails) { mail in
-                NavigationLink {
-                    MailReaderView(mailId: mail.id) { Task { await vm.reload() } }
-                } label: {
-                    MailRowView(state: MailRowState(mail: mail))
-                }
-                .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 12))
-                .contextMenu {
-                    Button {
-                        composeSeed = makeReplySeed(for: mail)
-                    } label: {
-                        Label("Ответить", systemImage: "arrowshape.turn.up.left")
-                    }
-
-                    Button {
-                        Haptics.light()
-                        vm.setRead(mail, !mail.read)
-                    } label: {
-                        Label(
-                            mail.read ? "Отметить как непрочитанное" : "Отметить как прочитанное",
-                            systemImage: mail.read ? "envelope.badge" : "envelope.open"
-                        )
-                    }
-
-                    Button {
-                        Haptics.light()
-                        vm.toggleStar(mail)
-                    } label: {
-                        Label(
-                            mail.important ? "Убрать из избранного" : "В избранное",
-                            systemImage: mail.important ? "star.slash" : "star"
-                        )
-                    }
-
-                    if !mail.fromEmail.isEmpty {
-                        Button {
-                            UIPasteboard.general.string = mail.fromEmail
-                            Haptics.light()
-                        } label: {
-                            Label("Скопировать email отправителя", systemImage: "doc.on.doc")
-                        }
-                    }
-
-                    Divider()
-
-                    Button(role: .destructive) {
-                        Haptics.warning()
-                        vm.delete(mail)
-                    } label: {
-                        Label("Удалить", systemImage: "trash")
-                    }
-                }
-                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                    Button(role: .destructive) {
-                        Haptics.warning()
-                        vm.delete(mail)
-                    } label: {
-                        Label("Удалить", systemImage: "trash")
-                    }
-                    Button {
-                        Haptics.medium()
-                        vm.moveToSpam(mail)
-                    } label: {
-                        Label("Спам", systemImage: "exclamationmark.octagon")
-                    }.tint(.orange)
-                }
-                .swipeActions(edge: .leading, allowsFullSwipe: true) {
-                    Button {
-                        Haptics.light()
-                        vm.setRead(mail, !mail.read)
-                    } label: {
-                        Label(mail.read ? "Не прочитано" : "Прочитано",
-                              systemImage: mail.read ? "envelope.badge" : "envelope.open")
-                    }.tint(.blue)
-                    Button {
-                        Haptics.light()
-                        vm.toggleStar(mail)
-                    } label: {
-                        Label("Важное", systemImage: "star")
-                    }.tint(.yellow)
-                }
-                .onAppear {
-                    if mail.id == vm.displayedMails.last?.id {
-                        Task { await vm.loadMore() }
+        ZStack(alignment: .bottom) {
+            List {
+                ForEach(vm.displayedMails) { mail in
+                    if vm.isSelecting {
+                        selectableRow(mail)
+                    } else {
+                        normalRow(mail)
                     }
                 }
             }
+            .listStyle(.plain)
+            .animation(.default, value: vm.displayedMails)
+            .navigationTitle(vm.isSelecting ? "\(vm.selectedIds.count) выбрано" : folderTitle)
+            .navigationBarTitleDisplayMode(.inline)
+            .searchable(text: searchBinding, prompt: "Поиск в почте")
+            .refreshable { await vm.refresh() }
+            .safeAreaInset(edge: .top) {
+                VStack(spacing: 0) {
+                    if !network.isConnected {
+                        HStack(spacing: 6) {
+                            Image(systemName: "wifi.slash")
+                                .font(.caption)
+                            Text("Нет соединения")
+                                .font(.caption.weight(.medium))
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 6)
+                        .background(Color.orange.opacity(0.9))
+                        .foregroundStyle(.white)
+                    }
+                    if !vm.isSelecting { folderChips }
+                    if vm.isSelecting { batchToolbar }
+                }
+            }
+            .overlay { if vm.displayedMails.isEmpty && !vm.isSelecting { emptyState } }
+            .overlay(alignment: .bottomTrailing) {
+                if !vm.isSelecting { composeButton }
+            }
+            .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    if vm.isSelecting {
+                        Button("Отмена") { vm.exitSelection() }
+                    } else {
+                        folderMenu
+                    }
+                }
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    if vm.isSelecting {
+                        Button("Все") { vm.selectAll() }
+                    } else {
+                        overflowMenu
+                    }
+                }
+                if !vm.isSelecting {
+                    ToolbarItem(placement: .navigationBarTrailing) { accountButton }
+                }
+            }
+            .task { await vm.startIfNeeded() }
+            .onAppear { Task { await vm.reload() } }
+            .onReceive(network.restored) {
+                Task { await vm.refresh() }
+            }
+            .sheet(isPresented: $showCompose, onDismiss: { Task { await vm.refresh() } }) {
+                ComposeView()
+            }
+            .sheet(item: $composeSeed, onDismiss: { Task { await vm.refresh() } }) { seed in
+                ComposeView(seed: seed)
+            }
+            .sheet(isPresented: $showAccounts) {
+                AccountSwitcherView(accounts: accounts)
+            }
+            .sheet(isPresented: $showSettings) {
+                SettingsView(accounts: accounts)
+            }
+
+            // Toast
+            if let toast = vm.refreshToast {
+                Text(toast)
+                    .font(.footnote.weight(.medium))
+                    .padding(.horizontal, 16).padding(.vertical, 8)
+                    .background(.ultraThinMaterial)
+                    .clipShape(Capsule())
+                    .shadow(radius: 4)
+                    .padding(.bottom, 80)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                    .animation(.easeInOut(duration: 0.25), value: toast)
+            }
         }
-        .listStyle(.plain)
-        .animation(.default, value: vm.displayedMails)
-        .navigationTitle(folderTitle)
-        .navigationBarTitleDisplayMode(.inline)
-        .searchable(text: searchBinding, prompt: "Поиск в почте")
-        .refreshable { await vm.refresh() }
-        .safeAreaInset(edge: .top) { folderChips }
-        .overlay { if vm.displayedMails.isEmpty { emptyState } }
-        .overlay(alignment: .bottomTrailing) { composeButton }
-        .toolbar {
-            ToolbarItem(placement: .navigationBarLeading) { folderMenu }
-            ToolbarItem(placement: .navigationBarTrailing) { overflowMenu }
-            ToolbarItem(placement: .navigationBarTrailing) { accountButton }
+    }
+
+    // MARK: - Row variants
+
+    @ViewBuilder
+    private func normalRow(_ mail: MailItem) -> some View {
+        NavigationLink {
+            MailReaderView(mailId: mail.id) { Task { await vm.reload() } }
+        } label: {
+            MailRowView(state: MailRowState(mail: mail))
         }
-        .task { await vm.startIfNeeded() }
-        .onAppear { Task { await vm.reload() } }
-        .sheet(isPresented: $showCompose, onDismiss: { Task { await vm.refresh() } }) {
-            ComposeView()
+        .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 12))
+        .contextMenu {
+            Button {
+                composeSeed = makeReplySeed(for: mail)
+            } label: {
+                Label("Ответить", systemImage: "arrowshape.turn.up.left")
+            }
+
+            Button {
+                Haptics.light()
+                vm.setRead(mail, !mail.read)
+            } label: {
+                Label(
+                    mail.read ? "Отметить как непрочитанное" : "Отметить как прочитанное",
+                    systemImage: mail.read ? "envelope.badge" : "envelope.open"
+                )
+            }
+
+            Button {
+                Haptics.light()
+                vm.toggleStar(mail)
+            } label: {
+                Label(
+                    mail.important ? "Убрать из избранного" : "В избранное",
+                    systemImage: mail.important ? "star.slash" : "star"
+                )
+            }
+
+            if !mail.fromEmail.isEmpty {
+                Button {
+                    ClipboardManager.shared.copySecurely(text: mail.fromEmail)
+                    Haptics.medium()
+                } label: {
+                    Label("Скопировать email отправителя", systemImage: "doc.on.doc")
+                }
+            }
+
+            Divider()
+
+            Button { vm.enterSelection(mail) } label: {
+                Label("Выделить", systemImage: "checkmark.circle")
+            }
+
+            Button(role: .destructive) {
+                Haptics.warning()
+                vm.delete(mail)
+            } label: {
+                Label("Удалить", systemImage: "trash")
+            }
         }
-        .sheet(item: $composeSeed, onDismiss: { Task { await vm.refresh() } }) { seed in
-            ComposeView(seed: seed)
+        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+            Button {
+                Haptics.medium()
+                vm.moveToTrash(mail)
+            } label: {
+                Label("В корзину", systemImage: "trash")
+            }.tint(.orange)
+
+            Button(role: .destructive) {
+                Haptics.warning()
+                vm.delete(mail)
+            } label: {
+                Label("Удалить", systemImage: "trash")
+            }
+
+            Button {
+                Haptics.medium()
+                vm.moveToSpam(mail)
+            } label: {
+                Label("Спам", systemImage: "exclamationmark.octagon")
+            }.tint(.red)
         }
-        .sheet(isPresented: $showAccounts) {
-            AccountSwitcherView(accounts: accounts)
+        .swipeActions(edge: .leading, allowsFullSwipe: true) {
+            Button {
+                Haptics.medium()
+                let emailToCopy = mail.fromEmail.isEmpty ? mail.sender : mail.fromEmail
+                ClipboardManager.shared.copySecurely(text: emailToCopy)
+            } label: {
+                Label("Копировать email", systemImage: "doc.on.doc")
+            }.tint(.blue)
+
+            Button {
+                Haptics.light()
+                vm.setRead(mail, !mail.read)
+            } label: {
+                Label(mail.read ? "Не прочитано" : "Прочитано",
+                      systemImage: mail.read ? "envelope.badge" : "envelope.open")
+            }.tint(.indigo)
         }
-        .sheet(isPresented: $showSettings) {
-            SettingsView(accounts: accounts)
+        .onAppear {
+            if mail.id == vm.displayedMails.last?.id {
+                Task { await vm.loadMore() }
+            }
         }
+    }
+
+    @ViewBuilder
+    private func selectableRow(_ mail: MailItem) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: vm.selectedIds.contains(mail.id) ? "checkmark.circle.fill" : "circle")
+                .foregroundStyle(vm.selectedIds.contains(mail.id) ? Color.accentColor : .secondary)
+                .font(.title3)
+            MailRowView(state: MailRowState(mail: mail))
+        }
+        .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 12))
+        .contentShape(Rectangle())
+        .onTapGesture { vm.toggleSelection(for: mail) }
+    }
+
+    private var batchToolbar: some View {
+        HStack(spacing: 0) {
+            batchButton(icon: "envelope.open", label: "Прочитать") {
+                Haptics.medium(); vm.batchMarkRead(true)
+            }
+            batchButton(icon: "envelope.badge", label: "Не прочитать") {
+                Haptics.medium(); vm.batchMarkRead(false)
+            }
+            batchButton(icon: "trash", label: "В корзину") {
+                Haptics.warning(); vm.batchMoveToTrash()
+            }
+            batchButton(icon: "trash.fill", label: "Удалить") {
+                Haptics.warning(); vm.batchDelete()
+            }
+        }
+        .padding(.vertical, 6)
+        .background(.bar)
+    }
+
+    private func batchButton(icon: String, label: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(spacing: 2) {
+                Image(systemName: icon).font(.body)
+                Text(label).font(.caption2)
+            }
+            .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(.plain)
+        .disabled(vm.selectedIds.isEmpty)
     }
 
     private func makeReplySeed(for mail: MailItem) -> ComposeSeed {
@@ -294,11 +524,13 @@ struct InboxView: View {
             Haptics.light()
             showAccounts = true
         } label: {
-            Text(activeInitial)
-                .font(.caption.bold())
-                .foregroundStyle(.white)
-                .frame(width: 30, height: 30)
-                .background(Color.accentColor, in: Circle())
+            if let active = accounts.activeEmail, !active.isEmpty {
+                AvatarView(email: active, size: 30)
+            } else {
+                Circle()
+                    .fill(Color.accentColor)
+                    .frame(width: 30, height: 30)
+            }
         }
     }
 
@@ -423,7 +655,8 @@ struct AccountSwitcherView: View {
             List {
                 Section("Почтовые ящики") {
                     ForEach(accounts.emails, id: \.self) { email in
-                        HStack {
+                        HStack(spacing: 12) {
+                            AvatarView(email: email, size: 36)
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(email)
                                     .font(.subheadline)

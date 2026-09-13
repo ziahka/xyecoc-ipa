@@ -6,8 +6,9 @@ import SwiftUI
 final class SettingsViewModel: ObservableObject {
     @Published var email: String = ""
     @Published var reserveEmail: String = ""
-    @Published var signatureReply: String = ""
-    @Published var signatureNew: String = ""
+    @Published var signature: String = ""
+    @Published var signatureReplyEnabled: Bool = true
+    @Published var signatureNewEnabled: Bool = true
     @Published var is2FAEnabled: Bool = false
     @Published var aliases: [AliasAddress] = []
     @Published var folders: [Folder] = []
@@ -26,8 +27,9 @@ final class SettingsViewModel: ObservableObject {
         if resp.isSuccess() {
             if let em = resp.email, !em.isEmpty { self.email = em }
             self.reserveEmail = resp.reserveEmail ?? ""
-            self.signatureReply = resp.signature ?? ""
-            self.signatureNew = resp.signature ?? ""
+            self.signature = resp.signature ?? ""
+            self.signatureReplyEnabled = resp.signatureReply ?? true
+            self.signatureNewEnabled = resp.signatureNew ?? true
             self.is2FAEnabled = (resp.twoFactor == "1" || resp.twoFactor == "true")
         }
 
@@ -64,7 +66,7 @@ final class SettingsViewModel: ObservableObject {
     }
 
     func saveSignatures() async -> Bool {
-        let resp = await repo.updateSignatures(reply: signatureReply, new: signatureNew)
+        let resp = await repo.updateSignatures(signature: signature, reply: signatureReplyEnabled, new: signatureNewEnabled)
         return resp.isSuccess()
     }
 
@@ -142,6 +144,7 @@ struct SettingsView: View {
             List {
                 accountSection
                 appearanceAndLangSection
+                AppIconPickerView()
                 securitySection
                 mailManagementSection
                 communitySection
@@ -182,14 +185,7 @@ struct SettingsView: View {
     private var accountSection: some View {
         Section("Аккаунт") {
             HStack(spacing: 14) {
-                ZStack {
-                    Circle()
-                        .fill(AvatarGenerator.backgroundColor(for: vm.email))
-                        .frame(width: 48, height: 48)
-                    Text(AvatarGenerator.initials(displayName: vm.email, email: vm.email))
-                        .font(.headline.bold())
-                        .foregroundStyle(.white)
-                }
+                AvatarView(email: vm.email, displayName: vm.email, size: 48)
 
                 VStack(alignment: .leading, spacing: 3) {
                     Text(vm.email.isEmpty ? "Загрузка..." : vm.email)
@@ -344,7 +340,7 @@ struct SettingsView: View {
             HStack {
                 Text("Версия клиента")
                 Spacer()
-                Text("1.0.1")
+                Text(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0.1")
                     .foregroundStyle(.secondary)
             }
 
@@ -551,9 +547,20 @@ struct TwoFactorSetupSheet: View {
                 } else {
                     Section("Настройка аутентификатора") {
                         if let qr = qrData {
-                            Text("Секретный ключ: \(qr.secret)")
-                                .font(.caption.monospaced())
-                                .textSelection(.enabled)
+                            HStack {
+                                Text("Секретный ключ: \(qr.secret)")
+                                    .font(.caption.monospaced())
+                                    .textSelection(.enabled)
+                                Spacer()
+                                Button {
+                                    ClipboardManager.shared.copySecurely(text: qr.secret)
+                                    Haptics.medium()
+                                } label: {
+                                    Image(systemName: "doc.on.doc")
+                                        .font(.caption)
+                                }
+                                .buttonStyle(.borderless)
+                            }
                             TextField("6-значный код", text: $totpCode)
                                 .keyboardType(.numberPad)
                             Button("Активировать") {
@@ -602,16 +609,16 @@ struct SignaturesEditorView: View {
 
     var body: some View {
         Form {
-            Section("Подпись для новых писем") {
-                TextEditor(text: $vm.signatureNew)
-                    .frame(minHeight: 80)
+            Section("Текст подписи") {
+                TextEditor(text: $vm.signature)
+                    .frame(minHeight: 100)
             }
-            Section("Подпись для ответов") {
-                TextEditor(text: $vm.signatureReply)
-                    .frame(minHeight: 80)
+            Section("Когда добавлять подпись") {
+                Toggle("В новых письмах", isOn: $vm.signatureNewEnabled)
+                Toggle("В ответах", isOn: $vm.signatureReplyEnabled)
             }
             Section {
-                Button("Сохранить подписи") {
+                Button("Сохранить") {
                     Task {
                         _ = await vm.saveSignatures()
                         isSaved = true

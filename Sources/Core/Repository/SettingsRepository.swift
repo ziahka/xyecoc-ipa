@@ -86,15 +86,16 @@ final class SettingsRepository {
 
     // MARK: - Signatures & Aliases
 
-    /// account/update-profile — saves default and reply signatures.
-    func updateSignatures(reply: String, new: String) async -> ApiResponse {
+    /// account/update-profile — saves signature text and per-context flags.
+    func updateSignatures(signature: String, reply: Bool, new: Bool) async -> ApiResponse {
         let payload = RequestPayload(
             service: "account",
             action: "update-profile",
             token: token,
             data: .object([
-                "signature_reply": .string(reply),
-                "signature_new": .string(new)
+                "signature": .string(signature),
+                "signature_reply": .bool(reply),
+                "signature_new": .bool(new)
             ])
         )
         return await api.request(payload)

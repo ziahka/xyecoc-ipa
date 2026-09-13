@@ -5,15 +5,8 @@ struct MailRowView: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
-            ZStack {
-                Circle()
-                    .fill(state.isRead ? state.avatarBgColor.opacity(0.35) : state.avatarBgColor)
-                    .frame(width: 44, height: 44)
-
-                Text(state.avatarInitials)
-                    .font(.system(size: 15, weight: .bold, design: .rounded))
-                    .foregroundStyle(.white)
-            }
+            AvatarView(email: state.email, displayName: state.sender, size: 44)
+                .opacity(state.isRead ? 0.6 : 1.0)
 
             VStack(alignment: .leading, spacing: 3) {
                 HStack {

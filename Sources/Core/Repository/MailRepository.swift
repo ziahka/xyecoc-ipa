@@ -125,7 +125,9 @@ final class MailRepository {
             switch action {
             case "read": await db.setRead(mailId, true)
             case "delete": await db.delete(mailId)
-            case "important": await db.setImportant(mailId, true)
+            case "important":
+                let current = await db.mail(id: mailId)?.important ?? false
+                await db.setImportant(mailId, !current)
             case "move-to-folder":
                 if let name = value?.stringValue { await db.move(mailId, toFolder: name) }
             default: break
@@ -202,21 +204,26 @@ final class MailRepository {
                   subject: String,
                   messageHtml: String,
                   attachments: [Attachment] = [],
-                  isDraft: Bool = false) async -> ApiResponse {
+                  isDraft: Bool = false,
+                  from: String? = nil) async -> ApiResponse {
         let mapped: [JSONValue] = attachments.map {
             .object(["filename": .string($0.fileName),
                      "content": $0.content.map { JSONValue.string($0) } ?? .null])
+        }
+        var fields: [String: JSONValue] = [
+            "users": .string(recipients.joined(separator: ",")),
+            "subject": .string(subject),
+            "message": .string(messageHtml),
+            "attaches": .array(mapped)
+        ]
+        if let from = from, !from.isEmpty {
+            fields["from"] = .string(from)
         }
         let payload = RequestPayload(
             service: "mail",
             action: "message-new",
             token: token,
-            data: .object([
-                "users": .string(recipients.joined(separator: ",")),
-                "subject": .string(subject),
-                "message": .string(messageHtml),
-                "attaches": .array(mapped)
-            ]),
+            data: .object(fields),
             draft: isDraft
         )
         return await api.request(payload)
