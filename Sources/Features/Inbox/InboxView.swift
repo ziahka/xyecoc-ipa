@@ -93,6 +93,9 @@ final class InboxViewModel: ObservableObject {
             while !Task.isCancelled {
                 // Интервал опроса — настройка «poll_interval»; 0 = вручную.
                 let interval = Prefs.pollInterval.seconds
+                // Проактивно продлеваем сессию — сервер гасит токены быстро,
+                // а mail/default на мёртвой сессии отвечает эхой без ошибки.
+                await repo.preemptiveSessionRefresh()
                 // Poll the folder the user is actually looking at; the virtual
                 // snoozed folder has no server representation. Фетчим СРАЗУ,
                 // а не после сна: (пере)старт опроса не оставляет список
@@ -310,8 +313,9 @@ final class InboxViewModel: ObservableObject {
             mails.removeAll { $0.id == mail.id }
         }
         Task {
-            _ = await repo.performMailAction(mailId: mail.id, action: "move-to-folder",
-                                             value: .string("trash"), folder: requestFolder(for: mail))
+            let response = await repo.performMailAction(mailId: mail.id, action: "move-to-folder",
+                                                        value: .string("trash"), folder: requestFolder(for: mail))
+            if let err = response.error { showToast("Не удалось: \(err)") }
             await reload()
         }
     }
@@ -359,14 +363,16 @@ final class InboxViewModel: ObservableObject {
 
     func toggleStar(_ mail: MailItem) {
         Task {
-            _ = await repo.performMailAction(mailId: mail.id, action: "important", folder: requestFolder(for: mail))
+            let response = await repo.performMailAction(mailId: mail.id, action: "important", folder: requestFolder(for: mail))
+            if let err = response.error { showToast("Не удалось: \(err)") }
             await reload()
         }
     }
 
     func delete(_ mail: MailItem) {
         Task {
-            _ = await repo.performMailAction(mailId: mail.id, action: "delete", folder: requestFolder(for: mail))
+            let response = await repo.performMailAction(mailId: mail.id, action: "delete", folder: requestFolder(for: mail))
+            if let err = response.error { showToast("Не удалось удалить: \(err)") }
             await reload()
         }
     }
@@ -380,8 +386,9 @@ final class InboxViewModel: ObservableObject {
 
     func moveToSpam(_ mail: MailItem) {
         Task {
-            _ = await repo.performMailAction(mailId: mail.id, action: "move-to-folder",
-                                             value: .string("spam"), folder: requestFolder(for: mail))
+            let response = await repo.performMailAction(mailId: mail.id, action: "move-to-folder",
+                                                        value: .string("spam"), folder: requestFolder(for: mail))
+            if let err = response.error { showToast("Не удалось: \(err)") }
             await reload()
         }
     }

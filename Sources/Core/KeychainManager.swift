@@ -104,6 +104,8 @@ final class KeychainManager {
     func updateActiveToken(_ token: String) {
         guard let email = activeEmail() else { return }
         set(token, account: tokenKey(email))
+        // Отметка времени свежего токена для проактивного продления сессии.
+        UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: "token_refreshed_at")
     }
 
     func removeAccount(email: String) {

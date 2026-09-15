@@ -30,6 +30,11 @@ final class MailRepository: @unchecked Sendable {
 
     private var token: String { keychain.getToken() ?? "" }
 
+    /// Проактивное продление сессии (см. ApiClient.preemptiveSessionRefresh).
+    func preemptiveSessionRefresh() async {
+        await api.preemptiveSessionRefresh()
+    }
+
     // MARK: - Local reads (snapshots from the cache)
 
     func localMails(folder: String) async -> [MailItem] { await db.mails(folder: folder) }

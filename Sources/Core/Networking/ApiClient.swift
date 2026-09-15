@@ -72,7 +72,34 @@ final class ApiClient {
             retryPayload.token = refreshed
             return await rawRequest(retryPayload)
         }
+
+        // Специфика сервера: mail/default с мёртвой сессией возвращает
+        // «эхо»-конверт без статуса, ошибки и данных (проверено curl'ом):
+        // {"params":...,"service":"mail","action":"default","security":"private"}
+        // Клиент видит «успех без данных» и молчит. Лечим: трактуем как
+        // auth-сбой, пробуем refresh-token, ретраим; если эхо повторилось —
+        // превращаем его в явную ошибку, чтобы UI показал причину.
+        if Self.isMailDefaultEcho(payload, response) {
+            if allowRetry, !payload.token.isEmpty,
+               let refreshed = await attemptTokenRefresh(expiredToken: payload.token) {
+                var retryPayload = payload
+                retryPayload.token = refreshed
+                let retried = await rawRequest(retryPayload)
+                if !Self.isMailDefaultEcho(retryPayload, retried) { return retried }
+            }
+            var failed = response
+            failed.status = 0
+            failed.error = "authenticate error"
+            return failed
+        }
         return response
+    }
+
+    /// Эхо-конверт мёртвой сессии: ни ошибки, ни данных, ни статуса.
+    private static func isMailDefaultEcho(_ payload: RequestPayload, _ r: ApiResponse) -> Bool {
+        payload.service == "mail" && payload.action == "default"
+            && r.error == nil && r.mails == nil && r.folders == nil && r.tags == nil
+            && r.status == nil && r.message == nil && r.data == nil
     }
 
     // MARK: - Internals
@@ -139,7 +166,25 @@ final class ApiClient {
             return nil
         }
         KeychainManager.shared.updateActiveToken(newToken)
+        UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: "token_refreshed_at")
         return newToken
+    }
+
+    private static let sessionRefreshInterval: TimeInterval = 15 * 60
+
+    /// Проактивное продление сессии раз в 15 минут. Сервер гасит токены
+    /// быстро, а mail/default при мёртвой сессии отвечает эхой без ошибки —
+    /// поэтому продлеваем заранее, пока старый токен ещё жив.
+    func preemptiveSessionRefresh() async {
+        guard !keychainToken().isEmpty else { return }
+        let last = UserDefaults.standard.double(forKey: "token_refreshed_at")
+        guard Date().timeIntervalSince1970 - last >= Self.sessionRefreshInterval else { return }
+        UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: "token_refreshed_at")
+        _ = await attemptTokenRefresh(expiredToken: keychainToken())
+    }
+
+    private func keychainToken() -> String {
+        KeychainManager.shared.activeToken() ?? ""
     }
 
     // MARK: - Raw mail HTML from the CDN
