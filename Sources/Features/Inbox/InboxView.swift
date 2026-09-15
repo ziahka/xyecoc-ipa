@@ -1,4 +1,5 @@
 import SwiftUI
+import UserNotifications
 
 /// Секция списка с группировкой по датам («Сегодня / Вчера / Ранее»).
 struct MailSection: Identifiable {
@@ -36,6 +37,8 @@ final class InboxViewModel: ObservableObject {
     // Polling
     @Published var unreadBadge: Int = 0
     @Published var importantUnread: Int = 0
+    /// false, когда сцена в фоне: тосты не видны — уведомляем локальным push.
+    @Published var isAppActive = true
     @Published var snoozedCount: Int = 0
     @Published var groupedSections: [MailSection] = []
     private var pollingTask: Task<Void, Never>?
@@ -99,14 +102,19 @@ final class InboxViewModel: ObservableObject {
                 }
                 await reload()
                 unreadBadge = await currentBadgeCount()
-                // Тост о новых письмах: считаем только входящие, чтобы
-                // собственные отправки и черновики не поднимали тост.
+                // Новые письма: считаем только входящие, чтобы собственные
+                // отправки и черновики не считались. В фоне — локальное
+                // уведомление, на экране — тост.
                 let newMaxId = await db.maxMailId()
                 if interval > 0, lastMaxId > 0, newMaxId > lastMaxId, Prefs.notifyNewMail {
                     let fresh = await db.countNewer(than: lastMaxId, inFolder: "inbox")
                     if fresh > 0 {
-                        Haptics.success()
-                        showToast("Новые письма: \(fresh)")
+                        if isAppActive {
+                            Haptics.success()
+                            showToast("Новые письма: \(fresh)")
+                        } else if await Self.notificationsAuthorized() {
+                            await Self.postNewMailNotification(count: fresh, maxId: newMaxId)
+                        }
                     }
                 }
                 lastMaxId = newMaxId
@@ -117,6 +125,24 @@ final class InboxViewModel: ObservableObject {
     func stopPolling() {
         pollingTask?.cancel()
         pollingTask = nil
+    }
+
+    /// Разрешены ли локальные уведомления.
+    private static func notificationsAuthorized() async -> Bool {
+        let settings = await UNUserNotificationCenter.current().notificationSettings()
+        return settings.authorizationStatus == .authorized
+            || settings.authorizationStatus == .provisional
+    }
+
+    /// Локальное уведомление о новых письмах; идентификатор по maxId —
+    /// повторные добавления с тем же id заменяют друг друга без спама.
+    private static func postNewMailNotification(count: Int, maxId: Int64) async {
+        let content = UNMutableNotificationContent()
+        content.title = "xyecoc почта"
+        content.body = count == 1 ? "Новое письмо" : "Новых писем: \(count)"
+        content.sound = .default
+        let request = UNNotificationRequest(identifier: "newmail-\(maxId)", content: content, trigger: nil)
+        try? await UNUserNotificationCenter.current().add(request)
     }
 
     func reload() async {
@@ -639,8 +665,22 @@ struct InboxView: View {
                 Task { await vm.reload() }
             }
             .onChange(of: scenePhase) { phase in
-                if phase == .active { vm.startPolling() }
-                else if phase == .background { vm.stopPolling() }
+                vm.isAppActive = phase == .active
+                if phase == .active {
+                    vm.startPolling()
+                    // Мгновенное обновление при возврате: иначе список
+                    // устаревает до первого тика опроса (до 30 секунд).
+                    Task { await vm.refresh() }
+                } else if phase == .background {
+                    // С keep-alive процесс жив и в фоне — polling продолжает
+                    // проверять почту и постит локальные уведомления.
+                    if Prefs.keepaliveEnabled {
+                        // Аудиосессия могла погибнуть — поднимаем, старт идемпотентный.
+                        SilentKeepAlive.shared.start()
+                    } else {
+                        vm.stopPolling()
+                    }
+                }
             }
             .onReceive(network.restored) {
                 Task { await vm.refresh() }

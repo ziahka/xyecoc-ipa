@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import UserNotifications
 
 // MARK: - ViewModel
 
@@ -176,6 +177,7 @@ struct SettingsView: View {
     @AppStorage("privacy_switcher") private var privacySwitcher = false
     @AppStorage("haptics_enabled") private var hapticsEnabled = true
     @AppStorage("notify_new_mail") private var notifyNewMail = true
+    @AppStorage("background_keepalive") private var backgroundKeepalive = false
 
     @State private var showPasswordSheet = false
     @State private var showReserveSheet = false
@@ -472,6 +474,18 @@ struct SettingsView: View {
                 Label("Сообщать о новых письмах", systemImage: "envelope.badge")
             }
 
+            Toggle(isOn: $backgroundKeepalive) {
+                Label("Фоновая проверка писем", systemImage: "waveform")
+            }
+            .onChange(of: backgroundKeepalive) { enabled in
+                if enabled {
+                    UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
+                    SilentKeepAlive.shared.start()
+                } else {
+                    SilentKeepAlive.shared.stop()
+                }
+            }
+
             NavigationLink {
                 SignaturesEditorView(vm: vm)
             } label: {
@@ -504,7 +518,7 @@ struct SettingsView: View {
         } header: {
             Text("Почта")
         } footer: {
-            Text("«Сообщать о новых письмах» показывает тост, когда опрос замечает новое входящее. При «вручную» письма обновляются потягиванием списка.")
+            Text("«Сообщать о новых письмах» показывает тост, когда опрос замечает новое входящее. При «вручную» письма обновляются потягиванием списка. «Фоновая проверка» удерживает приложение живым в фоне тихим аудиотреком — письма проверяются сами и приходят уведомлениями; может слегка расходовать батарею.")
         }
     }
 
