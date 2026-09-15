@@ -59,6 +59,8 @@ actor MailDatabase {
                 return (id, v)
             })
         }
+
+        loadSnoozes()
     }
 
     // MARK: - Per-account switching
@@ -70,7 +72,9 @@ actor MailDatabase {
         folderList.removeAll()
         tagList.removeAll()
         htmlCache.removeAll()
+        snoozes.removeAll()
         load()
+        loadSnoozes()
     }
 
     func deleteCache(forAccount account: String) {
@@ -78,11 +82,14 @@ actor MailDatabase {
         try? FileManager.default.removeItem(at: url)
         let hUrl = appDir.appendingPathComponent("html-cache-\(Self.sanitize(account)).json")
         try? FileManager.default.removeItem(at: hUrl)
+        let sUrl = appDir.appendingPathComponent("snooze-\(Self.sanitize(account)).json")
+        try? FileManager.default.removeItem(at: sUrl)
         if account == activeAccount {
             mailsById.removeAll()
             folderList.removeAll()
             tagList.removeAll()
             htmlCache.removeAll()
+            snoozes.removeAll()
         }
     }
 
@@ -95,7 +102,21 @@ actor MailDatabase {
         loadHtmlCache()
     }
 
+    /// Coalesces snapshot writes: mutations arriving in a burst are flushed
+    /// once, 400 ms after the last call, instead of encoding and rewriting
+    /// the whole cache on every single mutation.
+    private var persistTask: Task<Void, Never>?
+
     private func persist() {
+        persistTask?.cancel()
+        persistTask = Task {
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            guard !Task.isCancelled else { return }
+            writeSnapshotNow()
+        }
+    }
+
+    private func writeSnapshotNow() {
         let snapshot = Snapshot(mails: Array(mailsById.values),
                                 folders: folderList, tags: tagList)
         guard let data = try? JSONEncoder().encode(snapshot) else { return }
@@ -111,6 +132,12 @@ actor MailDatabase {
     }
 
     func mail(id: Int64) -> MailItem? { mailsById[id] }
+
+    /// Every cached mail of the active account, newest first. Feeds the
+    /// local statistics screen without any network round-trip.
+    func allMails() -> [MailItem] {
+        mailsById.values.sorted { $0.id > $1.id }
+    }
 
     func upsertMails(_ mails: [MailItem]) {
         for mail in mails { mailsById[mail.id] = mail }
@@ -140,15 +167,33 @@ actor MailDatabase {
 
     func delete(_ id: Int64) {
         mailsById[id] = nil
+        if snoozes[id] != nil {
+            snoozes[id] = nil
+            persistSnoozesNow()
+        }
         persist()
     }
 
     func delete(ids: [Int64]) {
-        for id in ids { mailsById[id] = nil }
+        var snoozeChanged = false
+        for id in ids {
+            mailsById[id] = nil
+            if snoozes[id] != nil {
+                snoozes[id] = nil
+                snoozeChanged = true
+            }
+        }
+        if snoozeChanged { persistSnoozesNow() }
         persist()
     }
 
     func clearFolder(_ folder: String) {
+        let removedIds = Set(mailsById.filter { $0.value.folder == folder }.keys)
+        let droppedSnoozes = removedIds.filter { snoozes[$0] != nil }
+        if !droppedSnoozes.isEmpty {
+            for id in droppedSnoozes { snoozes[id] = nil }
+            persistSnoozesNow()
+        }
         mailsById = mailsById.filter { $0.value.folder != folder }
         persist()
     }
@@ -211,6 +256,66 @@ actor MailDatabase {
     func deleteTag(id: Int64) { tagList.removeAll { $0.id == id }; persist() }
     func clearTags() { tagList.removeAll(); persist() }
 
+    // MARK: - Snooze (local only)
+
+    /// One snoozed mail: the cached item plus the moment it comes back.
+    struct SnoozedMail {
+        let mail: MailItem
+        let until: Date
+    }
+
+    private struct SnoozeEntry: Codable {
+        var id: Int64
+        var until: Date
+    }
+
+    private var snoozes: [Int64: Date] = [:]
+
+    private var snoozeURL: URL {
+        appDir.appendingPathComponent("snooze-\(Self.sanitize(activeAccount)).json")
+    }
+
+    private func loadSnoozes() {
+        guard let data = try? Data(contentsOf: snoozeURL),
+              let entries = try? JSONDecoder().decode([SnoozeEntry].self, from: data) else { return }
+        snoozes = Dictionary(uniqueKeysWithValues: entries.map { ($0.id, $0.until) })
+    }
+
+    private func persistSnoozesNow() {
+        let entries = snoozes.map { SnoozeEntry(id: $0.key, until: $0.value) }
+        guard let data = try? JSONEncoder().encode(entries) else { return }
+        try? data.write(to: snoozeURL, options: .atomic)
+    }
+
+    func snooze(mailId: Int64, until date: Date) {
+        snoozes[mailId] = date
+        persistSnoozesNow()
+    }
+
+    func unsnooze(mailId: Int64) {
+        guard snoozes[mailId] != nil else { return }
+        snoozes[mailId] = nil
+        persistSnoozesNow()
+    }
+
+    /// Mail ids hidden by an active snooze right now.
+    func activeSnoozeIds() -> Set<Int64> {
+        let now = Date()
+        return Set(snoozes.filter { $0.value > now }.keys)
+    }
+
+    func activeSnoozeCount() -> Int { activeSnoozeIds().count }
+
+    /// Snoozed mails that have not woken up yet, soonest first.
+    func snoozedMails() -> [SnoozedMail] {
+        let now = Date()
+        return snoozes.compactMap { id, until in
+            guard until > now, let mail = mailsById[id] else { return nil }
+            return SnoozedMail(mail: mail, until: until)
+        }
+        .sorted { $0.until < $1.until }
+    }
+
     // MARK: - HTML body cache
 
     private var htmlCache: [Int64: String] = [:]
@@ -236,7 +341,20 @@ actor MailDatabase {
         })
     }
 
+    /// HTML bodies are the largest payloads, so their cache writes are
+    /// coalesced with a longer window (1 s).
+    private var persistHtmlTask: Task<Void, Never>?
+
     private func persistHtml() {
+        persistHtmlTask?.cancel()
+        persistHtmlTask = Task {
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            guard !Task.isCancelled else { return }
+            writeHtmlCacheNow()
+        }
+    }
+
+    private func writeHtmlCacheNow() {
         let dict = Dictionary(uniqueKeysWithValues: htmlCache.map { (String($0.key), $0.value) })
         guard let data = try? JSONEncoder().encode(dict) else { return }
         try? data.write(to: htmlCacheURL, options: .atomic)
@@ -259,7 +377,12 @@ actor MailDatabase {
         folderList.removeAll()
         tagList.removeAll()
         htmlCache.removeAll()
-        persist()
-        persistHtml()
+        snoozes.removeAll()
+        // Отложенные записи здесь не подходят: файлы должны опустеть сразу.
+        persistTask?.cancel()
+        persistHtmlTask?.cancel()
+        writeSnapshotNow()
+        writeHtmlCacheNow()
+        persistSnoozesNow()
     }
 }

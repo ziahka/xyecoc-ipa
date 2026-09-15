@@ -98,6 +98,7 @@ struct ComposeView: View {
     @State private var showSendDisabled = false
     @State private var showDraftAlert = false
     @State private var autoSaveTask: Task<Void, Never>?
+    @State private var lastAutoSavedKey: String?
 
     private let senderEmail = KeychainManager.shared.getEmail() ?? ""
     @State private var selectedSender: String
@@ -105,6 +106,13 @@ struct ComposeView: View {
 
     private var hasContent: Bool {
         !to.isEmpty || !subject.isEmpty || !bodyText.isEmpty || !attachments.isEmpty
+    }
+
+    /// Отпечаток содержимого: autosave отправляет черновик на сервер,
+    /// только когда он реально изменился с прошлой автосохранки.
+    private var draftContentKey: String {
+        [to, subject, bodyText, attachments.map(\.fileName).joined(separator: ",")]
+            .joined(separator: "\u{1F}")
     }
 
     init(seed: ComposeSeed = ComposeSeed()) {
@@ -185,11 +193,16 @@ struct ComposeView: View {
         autoSaveTask?.cancel()
         autoSaveTask = Task {
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 15_000_000_000)
+                try? await Task.sleep(nanoseconds: 5_000_000_000)
                 guard !Task.isCancelled, hasContent, !vm.isSending else { continue }
-                _ = await vm.send(recipients: to, subject: subject, body: bodyText,
-                                  attachments: attachments, isDraft: true,
-                                  isReply: replyMode, from: selectedSender)
+                let key = draftContentKey
+                guard key != lastAutoSavedKey else { continue }
+                let error = await vm.send(recipients: to, subject: subject, body: bodyText,
+                                          attachments: attachments, isDraft: true,
+                                          isReply: replyMode, from: selectedSender)
+                if error == nil {
+                    lastAutoSavedKey = key
+                }
             }
         }
     }
@@ -389,6 +402,7 @@ struct ComposeView: View {
                                 isReply: replyMode, from: selectedSender)
         if error == nil {
             Haptics.success()
+            autoSaveTask?.cancel()
             dismiss()
         } else if let err = error {
             Haptics.error()
@@ -407,6 +421,7 @@ struct ComposeView: View {
                                 isReply: replyMode, from: selectedSender)
         if error == nil {
             Haptics.light()
+            autoSaveTask?.cancel()
             dismiss()
         } else {
             Haptics.error()

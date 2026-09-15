@@ -63,7 +63,6 @@ struct ContentView: View {
     @StateObject private var accounts = AccountStore()
     @ObservedObject private var security = SecurityManager.shared
     @Environment(\.scenePhase) private var scenePhase
-    @State private var previousPhase: ScenePhase = .active
 
     @AppStorage("app_theme") private var selectedTheme: AppTheme = .cyan
     @AppStorage("app_language") private var selectedLanguage: AppLanguage = .ru
@@ -98,10 +97,16 @@ struct ContentView: View {
         }
         .animation(.easeInOut(duration: 0.25), value: security.isLocked)
         .onChange(of: scenePhase) { newPhase in
-            if newPhase == .background || (previousPhase == .background && newPhase == .active) {
-                security.lockAppIfNeeded()
+            // Блокировка откладывается по настройке «app_autolock»:
+            // уход в фон запоминает момент, возврат сравнивает интервал.
+            switch newPhase {
+            case .background:
+                security.appDidEnterBackground()
+            case .active:
+                security.appDidBecomeActive()
+            default:
+                break
             }
-            previousPhase = newPhase
         }
     }
 }
