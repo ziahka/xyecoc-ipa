@@ -63,6 +63,12 @@ struct MailRowView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
 
+                    if state.isPinned {
+                        Image(systemName: "pin.fill")
+                            .font(.caption2)
+                            .foregroundStyle(.orange)
+                    }
+
                     if !state.isRead {
                         Circle()
                             .fill(Color.accentColor)

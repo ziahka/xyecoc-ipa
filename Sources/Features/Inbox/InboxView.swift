@@ -19,6 +19,7 @@ final class InboxViewModel: ObservableObject {
     @Published var searchQuery: String = ""
     @Published var isRefreshing = false
     @Published var filterUnreadOnly = false
+    @Published var filterAttachments = false
 
     // Refresh throttle + toast
     @Published var refreshToast: String?
@@ -34,6 +35,7 @@ final class InboxViewModel: ObservableObject {
 
     // Polling
     @Published var unreadBadge: Int = 0
+    @Published var importantUnread: Int = 0
     @Published var snoozedCount: Int = 0
     @Published var groupedSections: [MailSection] = []
     private var pollingTask: Task<Void, Never>?
@@ -50,7 +52,11 @@ final class InboxViewModel: ObservableObject {
     private var didStart = false
 
     var displayedMails: [MailItem] {
-        filterUnreadOnly ? mails.filter { !$0.read } : mails
+        var result = filterUnreadOnly ? mails.filter { !$0.read } : mails
+        if filterAttachments {
+            result = result.filter { $0.hasAttachments }
+        }
+        return result
     }
 
     func startIfNeeded() async {
@@ -130,6 +136,7 @@ final class InboxViewModel: ObservableObject {
         folders = await db.folders()
         tags = await db.tags()
         unreadBadge = await currentBadgeCount()
+        importantUnread = await db.unreadCount(folder: "important")
         snoozedCount = await db.activeSnoozeCount()
     }
 
@@ -138,19 +145,24 @@ final class InboxViewModel: ObservableObject {
         Prefs.badgeScope == .all ? await db.unreadCountAll() : await db.unreadCount(folder: "inbox")
     }
 
-    /// Сортировка списка по настройке «sort_order».
+    /// Сортировка списка по настройке «sort_order»;
+    /// закреплённые письма всегда идут первыми.
     private func sortMails(_ source: [MailItem]) -> [MailItem] {
+        let base: [MailItem]
         switch Prefs.sortOrder {
         case .newest:
-            return source.sorted { $0.id > $1.id }
+            base = source.sorted { $0.id > $1.id }
         case .oldest:
-            return source.sorted { $0.id < $1.id }
+            base = source.sorted { $0.id < $1.id }
         case .unreadFirst:
-            return source.sorted { a, b in
+            base = source.sorted { a, b in
                 if a.read != b.read { return !a.read }
                 return a.id > b.id
             }
         }
+        let pinned = PinnedMailStore.all
+        guard !pinned.isEmpty else { return base }
+        return base.filter { pinned.contains($0.id) } + base.filter { !pinned.contains($0.id) }
     }
 
     /// Секции «Сегодня / Вчера / Ранее» по настройке «group_by_date».
@@ -237,6 +249,7 @@ final class InboxViewModel: ObservableObject {
         currentFolder = folder
         UserDefaults.standard.set(folder, forKey: "last_folder")
         filterUnreadOnly = false
+        filterAttachments = false
         exitSelection()
         Task { await reload(); await refresh() }
     }
@@ -762,6 +775,17 @@ struct InboxView: View {
 
             Divider()
 
+            Button {
+                Haptics.light()
+                PinnedMailStore.toggle(mail.id)
+                Task { await vm.reload() }
+            } label: {
+                Label(
+                    PinnedMailStore.isPinned(mail.id) ? "Открепить" : "Закрепить",
+                    systemImage: PinnedMailStore.isPinned(mail.id) ? "pin.slash" : "pin"
+                )
+            }
+
             Button { vm.enterSelection(mail) } label: {
                 Label("Выделить", systemImage: "checkmark.circle")
             }
@@ -969,9 +993,14 @@ struct InboxView: View {
                     Haptics.light()
                     vm.filterUnreadOnly.toggle()
                 }
-                chip("Важные", active: vm.currentFolder == "important") {
+                chip("Важные", active: vm.currentFolder == "important",
+                     badge: vm.importantUnread > 0 && vm.currentFolder != "important" ? vm.importantUnread : nil) {
                     Haptics.light()
                     vm.selectFolder("important")
+                }
+                chip("С вложениями", active: vm.filterAttachments) {
+                    Haptics.light()
+                    vm.filterAttachments.toggle()
                 }
                 chip("Отложенные", active: vm.currentFolder == snoozedFolderId,
                      badge: vm.snoozedCount > 0 && vm.currentFolder != snoozedFolderId ? vm.snoozedCount : nil) {
