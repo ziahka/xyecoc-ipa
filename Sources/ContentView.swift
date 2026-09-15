@@ -63,6 +63,7 @@ struct ContentView: View {
     @StateObject private var accounts = AccountStore()
     @ObservedObject private var security = SecurityManager.shared
     @Environment(\.scenePhase) private var scenePhase
+    @State private var previousPhase: ScenePhase = .active
 
     @AppStorage("app_theme") private var selectedTheme: AppTheme = .cyan
     @AppStorage("app_language") private var selectedLanguage: AppLanguage = .ru
@@ -97,16 +98,21 @@ struct ContentView: View {
         }
         .animation(.easeInOut(duration: 0.25), value: security.isLocked)
         .onChange(of: scenePhase) { newPhase in
-            // Блокировка откладывается по настройке «app_autolock»:
-            // уход в фон запоминает момент, возврат сравнивает интервал.
+            // Блокировка срабатывает ТОЛЬКО при возврате из настоящего фона.
+            // Системный диалог Face ID гоняет сцену active<->inactive —
+            // реагировать на него нельзя, иначе Face ID зацикливается:
+            // prompt -> разблокировка -> active -> снова лок -> prompt.
             switch newPhase {
             case .background:
                 security.appDidEnterBackground()
             case .active:
-                security.appDidBecomeActive()
+                if previousPhase == .background {
+                    security.appDidBecomeActive()
+                }
             default:
                 break
             }
+            previousPhase = newPhase
         }
     }
 }
