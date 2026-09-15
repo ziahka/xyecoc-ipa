@@ -473,6 +473,11 @@ struct SettingsView: View {
             Toggle(isOn: $notifyNewMail) {
                 Label("Сообщать о новых письмах", systemImage: "envelope.badge")
             }
+            .onChange(of: notifyNewMail) { enabled in
+                if enabled {
+                    UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
+                }
+            }
 
             Toggle(isOn: $backgroundKeepalive) {
                 Label("Фоновая проверка писем", systemImage: "waveform")

@@ -93,12 +93,17 @@ final class InboxViewModel: ObservableObject {
             while !Task.isCancelled {
                 // Интервал опроса — настройка «poll_interval»; 0 = вручную.
                 let interval = Prefs.pollInterval.seconds
-                try? await Task.sleep(nanoseconds: interval > 0 ? interval * 1_000_000_000 : 5_000_000_000)
-                guard !Task.isCancelled else { return }
                 // Poll the folder the user is actually looking at; the virtual
-                // snoozed folder has no server representation.
+                // snoozed folder has no server representation. Фетчим СРАЗУ,
+                // а не после сна: (пере)старт опроса не оставляет список
+                // устаревшим на весь интервал.
                 if interval > 0 && currentFolder != snoozedFolderId {
-                    _ = await repo.fetchMails(folder: currentFolder)
+                    let response = await repo.fetchMails(folder: currentFolder)
+                    // Молчаливые ошибки здесь — главный источник «письма нет,
+                    // пока не перелогинишься». Показываем причину на экране.
+                    if let err = response.error, isAppActive, !Task.isCancelled {
+                        showToast("Не удалось обновить: \(err)")
+                    }
                 }
                 await reload()
                 unreadBadge = await currentBadgeCount()
@@ -118,6 +123,8 @@ final class InboxViewModel: ObservableObject {
                     }
                 }
                 lastMaxId = newMaxId
+                try? await Task.sleep(nanoseconds: interval > 0 ? interval * 1_000_000_000 : 5_000_000_000)
+                guard !Task.isCancelled else { return }
             }
         }
     }
