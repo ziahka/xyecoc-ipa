@@ -668,10 +668,18 @@ struct InboxView: View {
                 vm.isAppActive = phase == .active
                 if phase == .active {
                     vm.startPolling()
+                    // Мгновенное обновление при возврате: иначе список
+                    // устаревает до первого тика опроса (до 30 секунд).
+                    Task { await vm.refresh() }
                 } else if phase == .background {
                     // С keep-alive процесс жив и в фоне — polling продолжает
                     // проверять почту и постит локальные уведомления.
-                    if !Prefs.keepaliveEnabled { vm.stopPolling() }
+                    if Prefs.keepaliveEnabled {
+                        // Аудиосессия могла погибнуть — поднимаем, старт идемпотентный.
+                        SilentKeepAlive.shared.start()
+                    } else {
+                        vm.stopPolling()
+                    }
                 }
             }
             .onReceive(network.restored) {
