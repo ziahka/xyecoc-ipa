@@ -27,6 +27,15 @@ The project connects directly to the official backend endpoints (`api.xyecoc.com
 * **Attachments Support:** Native export and download through the iOS Share Sheet and seamless upload of photos and documents via `PhotosPicker` and `UIDocumentPicker`.
 * **Hardware Security:** Sensitive tokens and credentials are encrypted and stored in the secure iOS **Keychain**.
 * **Two-Factor Authentication (2FA):** Integrated authentication state machine supporting standard 6-digit 2FA verification flow.
+* **OTP Code Detection:** When a letter contains a verification code, the reader shows a one-tap "copy code" chip; the clipboard is auto-erased after 60 seconds.
+* **Attachment Downloads:** Any attachment can be downloaded and handed to the native share sheet (save to Files, Photos, etc.) in addition to opening it in the browser.
+* **Local Mail Statistics:** A per-account dashboard built from the offline cache — totals, a 7-day activity chart, and the top senders.
+* **Privacy Controls:** Optional content-blocker rules stop remote tracking pixels in emails (service CDN images keep loading), plus a configurable reading font size and an unread-count home-screen badge.
+* **Snoozed Mail:** Hide a message from the lists until a chosen moment (1 hour, evening, tomorrow morning, a week) — it comes back on its own; a virtual "Snoozed" folder with a badge and one-tap unsnooze.
+* **Sender Blacklist:** Locally blocked addresses disappear from every list instantly, on top of the server-side block; the list is managed in Settings.
+* **Smart Locking:** The PIN is stored as PBKDF2-SHA256 with a random salt (legacy hashes migrate transparently), and the auto-lock delay is configurable: immediately, 1, 5 or 15 minutes.
+* **Reliability & Polish:** Polling refreshes the folder you are actually viewing, drafts autosave only when changed, cache writes are coalesced, batch actions run in parallel, destructive actions ask for confirmation, and attachments download without leaking the token to the browser.
+* **Make It Yours:** List density, snippet preview, date grouping (Today / Yesterday / Earlier), sorting, assignable swipe actions, undo-send with a countdown, send confirmation, a start folder, refresh interval, badge scope (inbox or all folders), a privacy shield for the app switcher, custom snooze date, and a haptics switch — all in Settings.
 
 ---
 

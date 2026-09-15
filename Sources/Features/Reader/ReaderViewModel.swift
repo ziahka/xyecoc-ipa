@@ -5,7 +5,10 @@ import Combine
 final class ReaderViewModel: ObservableObject {
     @Published var details: MailDetails?
     @Published var html: String = ""
+    @Published var otpCode: String?
     @Published var isLoading = false
+    @Published var loadFailed = false
+    @Published var loadErrorMessage: String?
     @Published var isQuickReplying = false
     @Published var quickReplyText = ""
     @Published var errorMessage: String?
@@ -18,6 +21,8 @@ final class ReaderViewModel: ObservableObject {
 
     func load(mailId: Int64) async {
         isLoading = true
+        loadFailed = false
+        loadErrorMessage = nil
         folders = await db.folders()
         tags = await db.tags()
 
@@ -39,7 +44,11 @@ final class ReaderViewModel: ObservableObject {
                 html = "<p style=\"font-family:sans-serif;font-size:16px;color:#333;line-height:1.5;\">\(d.snippet ?? "")</p>"
             }
             await db.setRead(mailId, true)
+        } else {
+            loadFailed = true
+            loadErrorMessage = response.message
         }
+        otpCode = OTPDetector.extractCode(from: html)
         isLoading = false
     }
 
@@ -106,8 +115,20 @@ final class ReaderViewModel: ObservableObject {
         _ = await repo.performMailAction(mailId: id, action: "move-to-folder", value: .string(folder.name))
     }
 
+    /// Локальное откладывание открытого письма.
+    func snoozeCurrent(until date: Date) async {
+        guard let id = details?.id else { return }
+        await db.snooze(mailId: id, until: date)
+    }
+
     func blockSender() async {
         guard let id = details?.id else { return }
+        // Локальный чёрный список: письмо исчезает из списков сразу.
+        if let email = details?.fromEmail, !email.isEmpty {
+            BlockedSendersStore.block(email)
+        } else if let sender = details?.sender, !sender.isEmpty {
+            BlockedSendersStore.block(sender)
+        }
         _ = await repo.blockSender(mailId: id)
     }
 

@@ -11,13 +11,20 @@ struct MailReaderView: View {
     @FocusState private var isReplyFocused: Bool
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.dismiss) private var dismiss
-    @Environment(\.openURL) private var openURL
     @State private var showFolderPicker = false
     @State private var composeSeed: ComposeSeed?
     @State private var shareItems: [Any]? = nil
     @State private var webViewHeight: CGFloat = 300
     @State private var currentMailId: Int64
     @State private var dragOffset: CGFloat = 0
+
+    @State private var downloadingAttachmentIds: Set<Int64> = []
+    @State private var downloadError: String?
+    @State private var otpCopied = false
+    @State private var showSnoozePicker = false
+
+    @AppStorage("mail_font_size") private var mailFontSize: MailFontSize = .medium
+    @AppStorage("block_remote_images") private var blockRemoteImages = false
 
     init(mailId: Int64, siblingIds: [Int64] = [], onChange: @escaping () -> Void = {}) {
         self.mailId = mailId
@@ -44,7 +51,13 @@ struct MailReaderView: View {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 14) {
                             headerCard(mail)
-                            ReaderWebView(html: styledHTML, isDark: colorScheme == .dark, dynamicHeight: $webViewHeight)
+                            if let code = vm.otpCode {
+                                otpBanner(code)
+                            }
+                            ReaderWebView(html: styledHTML,
+                                          isDark: colorScheme == .dark,
+                                          dynamicHeight: $webViewHeight,
+                                          blockRemoteImages: blockRemoteImages)
                                 .frame(height: max(webViewHeight, 150))
                             attachmentsBar(mail)
                         }
@@ -61,8 +74,17 @@ struct MailReaderView: View {
                 }
                 .offset(x: dragOffset)
                 .gesture(swipeGesture)
+            } else if vm.loadFailed {
+                errorState(
+                    icon: "wifi.exclamationmark",
+                    title: "Не удалось загрузить письмо",
+                    subtitle: vm.loadErrorMessage,
+                    retryTitle: "Повторить")
             } else {
-                Text("Не удалось загрузить письмо").foregroundStyle(.secondary)
+                EmptyStateView(
+                    icon: "tray.full",
+                    title: "Письмо не найдено",
+                    subtitle: "Возможно, оно было удалено или перемещено")
             }
         }
         .navigationTitle(vm.details?.getDisplaySubjectSafe() ?? "Письмо")
@@ -72,6 +94,14 @@ struct MailReaderView: View {
         }
         .sheet(isPresented: $showFolderPicker) { folderPicker }
         .sheet(item: $composeSeed) { seed in ComposeView(seed: seed) }
+        .sheet(isPresented: $showSnoozePicker) {
+            SnoozeDatePickerSheet { date in
+                Task {
+                    await vm.snoozeCurrent(until: date)
+                    onChange()
+                }
+            }
+        }
         .sheet(isPresented: Binding(
             get: { shareItems != nil },
             set: { if !$0 { shareItems = nil } }
@@ -88,12 +118,33 @@ struct MailReaderView: View {
         } message: {
             Text(vm.errorMessage ?? "")
         }
+        .alert("Не удалось скачать вложение", isPresented: Binding(
+            get: { downloadError != nil },
+            set: { if !$0 { downloadError = nil } }
+        )) {
+            Button("OK", role: .cancel) { downloadError = nil }
+        } message: {
+            Text(downloadError ?? "")
+        }
         .task { await vm.load(mailId: currentMailId) }
         .onChange(of: currentMailId) { newId in
             webViewHeight = 300
             Task { await vm.load(mailId: newId) }
         }
         .onDisappear { onChange() }
+    }
+
+    // MARK: - Error state
+
+    private func errorState(icon: String, title: String, subtitle: String?, retryTitle: String?) -> some View {
+        EmptyStateView(
+            icon: icon,
+            title: title,
+            subtitle: subtitle,
+            actionTitle: retryTitle,
+            action: {
+                Task { await vm.load(mailId: currentMailId) }
+            })
     }
 
     // MARK: - Action Bar (Apple Mail pattern)
@@ -224,7 +275,30 @@ struct MailReaderView: View {
             Button { showFolderPicker = true } label: {
                 Label("Переместить в папку", systemImage: "folder")
             }
-            Button { Task { await vm.blockSender() } } label: {
+            Menu {
+                ForEach(SnoozePreset.allCases) { preset in
+                    Button {
+                        Task {
+                            await vm.snoozeCurrent(until: preset.date())
+                            onChange()
+                        }
+                    } label: {
+                        Label(preset.title, systemImage: preset.systemImage)
+                    }
+                }
+                Divider()
+                Button {
+                    showSnoozePicker = true
+                } label: {
+                    Label("Своё время…", systemImage: "calendar.badge.clock")
+                }
+            } label: {
+                Label("Отложить", systemImage: "clock")
+            }
+            Button {
+                Haptics.warning()
+                Task { await vm.blockSender() }
+            } label: {
                 Label("Заблокировать отправителя", systemImage: "hand.raised")
             }
             Divider()
@@ -303,17 +377,41 @@ struct MailReaderView: View {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
                         ForEach(attachments) { attach in
-                            Button {
-                                if let url = attachmentURL(attach) { openURL(url) }
-                            } label: {
-                                Label("\(attach.fileName) (\(DateUtils.formatFileSize(attach.fileSize)))",
-                                      systemImage: "paperclip")
+                            HStack(spacing: 6) {
+                                Button {
+                                    // Тап по вложению скачивает файл и открывает
+                                    // системный share sheet — без передачи токена в браузер.
+                                    Task { await downloadAttachment(attach) }
+                                } label: {
+                                    Label("\(attach.fileName) (\(DateUtils.formatFileSize(attach.fileSize)))",
+                                          systemImage: "paperclip")
+                                        .font(.caption)
+                                        .padding(.horizontal, 12).padding(.vertical, 8)
+                                        .background(Color.secondary.opacity(0.12))
+                                        .clipShape(Capsule())
+                                }
+                                .buttonStyle(.plain)
+
+                                Button {
+                                    Task { await downloadAttachment(attach) }
+                                } label: {
+                                    Group {
+                                        if downloadingAttachmentIds.contains(attach.id) {
+                                            ProgressView()
+                                                .controlSize(.small)
+                                        } else {
+                                            Image(systemName: "square.and.arrow.down")
+                                        }
+                                    }
                                     .font(.caption)
-                                    .padding(.horizontal, 12).padding(.vertical, 8)
+                                    .frame(width: 32, height: 32)
                                     .background(Color.secondary.opacity(0.12))
-                                    .clipShape(Capsule())
+                                    .clipShape(Circle())
+                                }
+                                .buttonStyle(.plain)
+                                .disabled(downloadingAttachmentIds.contains(attach.id))
+                                .accessibilityLabel("Скачать \(attach.fileName)")
                             }
-                            .buttonStyle(.plain)
                         }
                     }
                 }
@@ -349,6 +447,110 @@ struct MailReaderView: View {
         return URL(string: path)
     }
 
+    // MARK: - OTP code chip
+
+    private func otpBanner(_ code: String) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: "123.rectangle")
+                .font(.title3)
+                .foregroundStyle(Color.accentColor)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Найден код подтверждения")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text(code)
+                    .font(.title3.monospaced().bold())
+                    .textSelection(.enabled)
+            }
+
+            Spacer()
+
+            Button {
+                Haptics.success()
+                ClipboardManager.shared.copySecurely(text: code)
+                otpCopied = true
+                Task {
+                    try? await Task.sleep(nanoseconds: 2_000_000_000)
+                    otpCopied = false
+                }
+            } label: {
+                Label(otpCopied ? "Скопировано" : "Копировать",
+                      systemImage: otpCopied ? "checkmark" : "doc.on.doc")
+                    .font(.footnote.weight(.medium))
+                    .padding(.horizontal, 12).padding(.vertical, 8)
+                    .background(otpCopied ? Color.green.opacity(0.18) : Color.accentColor.opacity(0.15))
+                    .foregroundStyle(otpCopied ? Color.green : Color.accentColor)
+                    .clipShape(Capsule())
+            }
+            .buttonStyle(.plain)
+            .disabled(otpCopied)
+        }
+        .padding(14)
+        .background(Color.accentColor.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 14))
+        .padding([.horizontal, .top])
+    }
+
+    // MARK: - Attachment download
+
+    /// Downloads the attachment from the CDN into a temporary file and opens
+    /// the system share sheet, so the file can be saved to Files/Photos.
+    private func downloadAttachment(_ attach: Attachment) async {
+        guard let url = attachmentURL(attach) else {
+            downloadError = "Не удалось построить ссылку на файл"
+            return
+        }
+        downloadingAttachmentIds.insert(attach.id)
+        defer { downloadingAttachmentIds.remove(attach.id) }
+
+        do {
+            let (data, response) = try await URLSession.shared.data(from: url)
+            guard let http = response as? HTTPURLResponse,
+                  (200..<300).contains(http.statusCode), !data.isEmpty else {
+                downloadError = "Сервер вернул ошибку \((response as? HTTPURLResponse)?.statusCode ?? -1)"
+                return
+            }
+
+            let name = sanitizedFileName(for: attach)
+            let dir = FileManager.default.temporaryDirectory
+                .appendingPathComponent("Attachments", isDirectory: true)
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            let fileURL = dir.appendingPathComponent(uniqueFileName(name, in: dir))
+            try data.write(to: fileURL, options: .atomic)
+
+            Haptics.light()
+            shareItems = [fileURL]
+        } catch {
+            downloadError = error.localizedDescription
+        }
+    }
+
+    private func sanitizedFileName(for attach: Attachment) -> String {
+        var name = attach.fileName
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: ":", with: "_")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if name.isEmpty {
+            name = "attachment.\(attach.fileExtension.isEmpty ? "bin" : attach.fileExtension)"
+        }
+        return name
+    }
+
+    private func uniqueFileName(_ name: String, in dir: URL) -> String {
+        var candidate = name
+        var counter = 1
+        while FileManager.default.fileExists(atPath: dir.appendingPathComponent(candidate).path) {
+            let ext = (name as NSString).pathExtension
+            let base = (name as NSString).deletingPathExtension
+            candidate = ext.isEmpty
+                ? "\(base)-\(counter)"
+                : "\(base)-\(counter).\(ext)"
+            counter += 1
+        }
+        return candidate
+    }
+
     private func exportAsImage() {
         guard let details = vm.details else { return }
         if let image = EmailExportService.shared.renderToImage(details: details, bodyText: vm.html) {
@@ -373,7 +575,7 @@ struct MailReaderView: View {
         <meta name="viewport" content="width=device-width, initial-scale=1.0">\
         <style>\
         html, body { margin: 0; padding: 16px; background-color: \(bgColor); color: \(textColor); \
-        font-family: -apple-system, BlinkMacSystemFont, sans-serif; font-size: 16px; line-height: 1.6; \
+        font-family: -apple-system, BlinkMacSystemFont, sans-serif; font-size: \(mailFontSize.points)px; line-height: 1.6; \
         word-break: break-word; }\
         img { max-width: 100% !important; height: auto !important; border-radius: 8px; }\
         table { max-width: 100% !important; }\
@@ -388,6 +590,24 @@ struct ReaderWebView: UIViewRepresentable {
     let html: String
     let isDark: Bool
     @Binding var dynamicHeight: CGFloat
+    var blockRemoteImages: Bool = false
+
+    static let ruleListIdentifier = "block-remote-images"
+
+    /// Content-blocker rules: block every remote image except the ones
+    /// served by the service CDN, where legitimate mail images live.
+    static func contentRulesJSON() -> String {
+        return """
+        [{
+            "trigger": { "url-filter": ".*", "resource-type": ["image"] },
+            "action": { "type": "block" }
+        },
+        {
+            "trigger": { "url-filter": ".*cdn\\\\.xyecoc\\\\.com.*", "resource-type": ["image"] },
+            "action": { "type": "ignore-previous-rules" }
+        }]
+        """
+    }
 
     func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
 
@@ -409,19 +629,44 @@ struct ReaderWebView: UIViewRepresentable {
         context.coordinator.loadedHTML = html
 
         let baseURL = URL(string: "https://cdn.xyecoc.com")
+        let load: () -> Void = { webView.loadHTMLString(self.html, baseURL: baseURL) }
+
         if let token = KeychainManager.shared.getToken(), !token.isEmpty,
            let cookie = HTTPCookie(properties: [
                 .domain: ".xyecoc.com", .path: "/",
                 .name: "authorization", .value: token
            ]) {
             webView.configuration.websiteDataStore.httpCookieStore.setCookie(cookie) {
-                DispatchQueue.main.async {
-                    webView.loadHTMLString(self.html, baseURL: baseURL)
-                }
+                self.applyContentRules(to: webView, completion: load)
             }
         } else {
-            webView.loadHTMLString(html, baseURL: baseURL)
+            applyContentRules(to: webView, completion: load)
         }
+    }
+
+    /// Installs (or removes) the image-blocking rule list before the body is
+    /// loaded. When the setting is off, previously installed rules are
+    /// removed so images load normally. WKContentRuleListStore caches the
+    /// compiled rules on disk per identifier, so re-compiling on each open
+    /// costs virtually nothing.
+    private func applyContentRules(to webView: WKWebView, completion: @escaping () -> Void) {
+        guard blockRemoteImages else {
+            webView.configuration.userContentController.removeAllContentRuleLists()
+            completion()
+            return
+        }
+
+        WKContentRuleListStore.default()?
+            .compileContentRuleList(
+                forIdentifier: Self.ruleListIdentifier,
+                encodedContentRuleList: Self.contentRulesJSON()) { list, _ in
+                DispatchQueue.main.async {
+                    if let list {
+                        webView.configuration.userContentController.add(list)
+                    }
+                    completion()
+                }
+            }
     }
 
     final class Coordinator: NSObject, WKNavigationDelegate {

@@ -1,5 +1,13 @@
 import SwiftUI
 
+/// Секция списка с группировкой по датам («Сегодня / Вчера / Ранее»).
+struct MailSection: Identifiable {
+    let id: String
+    let title: String
+    let mails: [MailItem]
+}
+import UIKit
+
 // MARK: - ViewModel
 
 @MainActor
@@ -11,6 +19,7 @@ final class InboxViewModel: ObservableObject {
     @Published var searchQuery: String = ""
     @Published var isRefreshing = false
     @Published var filterUnreadOnly = false
+    @Published var filterAttachments = false
 
     // Refresh throttle + toast
     @Published var refreshToast: String?
@@ -26,34 +35,81 @@ final class InboxViewModel: ObservableObject {
 
     // Polling
     @Published var unreadBadge: Int = 0
+    @Published var importantUnread: Int = 0
+    @Published var snoozedCount: Int = 0
+    @Published var groupedSections: [MailSection] = []
     private var pollingTask: Task<Void, Never>?
-    private static let pollingInterval: UInt64 = 30_000_000_000 // 30 sec
+
+    /// Mirrors the inbox unread count onto the app icon badge. The switch
+    /// lives in Settings ("app_icon_badge"); turning it off clears the badge.
+    func applyIconBadge(_ count: Int) {
+        let enabled = UserDefaults.standard.object(forKey: "app_icon_badge") as? Bool ?? true
+        BadgeCounter.set(enabled ? count : 0)
+    }
 
     private let repo = MailRepository()
     private let db = MailDatabase.shared
     private var didStart = false
 
     var displayedMails: [MailItem] {
-        filterUnreadOnly ? mails.filter { !$0.read } : mails
+        var result = filterUnreadOnly ? mails.filter { !$0.read } : mails
+        if filterAttachments {
+            result = result.filter { $0.hasAttachments }
+        }
+        return result
     }
 
     func startIfNeeded() async {
         guard !didStart else { await reload(); return }
         didStart = true
+        applyStartFolder()
         await reload()
         await refresh()
         startPolling()
     }
 
+    /// Папка при запуске — настройка «start_folder»:
+    /// входящие / важные / последняя открытая.
+    private func applyStartFolder() {
+        switch Prefs.startFolder {
+        case .inbox:
+            break
+        case .important:
+            currentFolder = "important"
+        case .last:
+            if let last = UserDefaults.standard.string(forKey: "last_folder") {
+                currentFolder = last
+            }
+        }
+    }
+
     func startPolling() {
         pollingTask?.cancel()
         pollingTask = Task {
+            var lastMaxId = await db.maxMailId()
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: Self.pollingInterval)
+                // Интервал опроса — настройка «poll_interval»; 0 = вручную.
+                let interval = Prefs.pollInterval.seconds
+                try? await Task.sleep(nanoseconds: interval > 0 ? interval * 1_000_000_000 : 5_000_000_000)
                 guard !Task.isCancelled else { return }
-                _ = await repo.fetchMails(folder: "inbox")
+                // Poll the folder the user is actually looking at; the virtual
+                // snoozed folder has no server representation.
+                if interval > 0 && currentFolder != snoozedFolderId {
+                    _ = await repo.fetchMails(folder: currentFolder)
+                }
                 await reload()
-                unreadBadge = await db.unreadCount(folder: "inbox")
+                unreadBadge = await currentBadgeCount()
+                // Тост о новых письмах: считаем только входящие, чтобы
+                // собственные отправки и черновики не поднимали тост.
+                let newMaxId = await db.maxMailId()
+                if interval > 0, lastMaxId > 0, newMaxId > lastMaxId, Prefs.notifyNewMail {
+                    let fresh = await db.countNewer(than: lastMaxId, inFolder: "inbox")
+                    if fresh > 0 {
+                        Haptics.success()
+                        showToast("Новые письма: \(fresh)")
+                    }
+                }
+                lastMaxId = newMaxId
             }
         }
     }
@@ -64,42 +120,136 @@ final class InboxViewModel: ObservableObject {
     }
 
     func reload() async {
-        let all = await db.mails(folder: currentFolder)
-        let q = searchQuery.trimmingCharacters(in: .whitespaces)
-        if q.isEmpty {
-            mails = all
+        applyIconBadge(await currentBadgeCount())
+        if currentFolder == snoozedFolderId {
+            mails = applySearch(await db.snoozedMails().map { $0.mail })
         } else {
-            mails = all.filter { mail in
-                switch searchScope {
-                case .all:
-                    return mail.displayName().range(of: q, options: .caseInsensitive) != nil
-                        || mail.displaySubject().range(of: q, options: .caseInsensitive) != nil
-                        || mail.snippet.range(of: q, options: .caseInsensitive) != nil
-                case .sender:
-                    return mail.displayName().range(of: q, options: .caseInsensitive) != nil
-                        || mail.fromEmail.range(of: q, options: .caseInsensitive) != nil
-                case .subject:
-                    return mail.displaySubject().range(of: q, options: .caseInsensitive) != nil
-                case .unread:
-                    return !mail.read && (
-                        mail.displayName().range(of: q, options: .caseInsensitive) != nil
-                        || mail.displaySubject().range(of: q, options: .caseInsensitive) != nil)
-                case .attachments:
-                    return mail.hasAttachments && (
-                        mail.displayName().range(of: q, options: .caseInsensitive) != nil
-                        || mail.displaySubject().range(of: q, options: .caseInsensitive) != nil)
-                }
+            let all = await db.mails(folder: currentFolder)
+            let snoozed = await db.activeSnoozeIds()
+            var visible = all.filter { !snoozed.contains($0.id) }
+            if !BlockedSendersStore.blocked.isEmpty {
+                visible = visible.filter { !BlockedSendersStore.isBlocked(senderEmail(of: $0)) }
             }
+            mails = applySearch(sortMails(visible))
         }
+        rebuildSections()
         folders = await db.folders()
         tags = await db.tags()
-        unreadBadge = await db.unreadCount(folder: "inbox")
+        unreadBadge = await currentBadgeCount()
+        importantUnread = await db.unreadCount(folder: "important")
+        snoozedCount = await db.activeSnoozeCount()
+    }
+
+    /// Бейдж по настройке «badge_scope»: только входящие или все папки.
+    private func currentBadgeCount() async -> Int {
+        Prefs.badgeScope == .all ? await db.unreadCountAll() : await db.unreadCount(folder: "inbox")
+    }
+
+    /// Сортировка списка по настройке «sort_order»;
+    /// закреплённые письма всегда идут первыми.
+    private func sortMails(_ source: [MailItem]) -> [MailItem] {
+        let base: [MailItem]
+        switch Prefs.sortOrder {
+        case .newest:
+            base = source.sorted { $0.id > $1.id }
+        case .oldest:
+            base = source.sorted { $0.id < $1.id }
+        case .unreadFirst:
+            base = source.sorted { a, b in
+                if a.read != b.read { return !a.read }
+                return a.id > b.id
+            }
+        }
+        let pinned = PinnedMailStore.all
+        guard !pinned.isEmpty else { return base }
+        return base.filter { pinned.contains($0.id) } + base.filter { !pinned.contains($0.id) }
+    }
+
+    /// Секции «Сегодня / Вчера / Ранее» по настройке «group_by_date».
+    private func rebuildSections() {
+        guard Prefs.groupByDate else {
+            groupedSections = []
+            return
+        }
+        let cal = Calendar.current
+        var today: [MailItem] = []
+        var yesterday: [MailItem] = []
+        var earlier: [MailItem] = []
+        for mail in displayedMails {
+            guard let date = DateUtils.parseISO(mail.createdAt) else {
+                earlier.append(mail)
+                continue
+            }
+            if cal.isDateInToday(date) {
+                today.append(mail)
+            } else if cal.isDateInYesterday(date) {
+                yesterday.append(mail)
+            } else {
+                earlier.append(mail)
+            }
+        }
+        var sections: [MailSection] = []
+        if !today.isEmpty { sections.append(MailSection(id: "today", title: "Сегодня", mails: today)) }
+        if !yesterday.isEmpty { sections.append(MailSection(id: "yesterday", title: "Вчера", mails: yesterday)) }
+        if !earlier.isEmpty { sections.append(MailSection(id: "earlier", title: "Ранее", mails: earlier)) }
+        groupedSections = sections
+    }
+
+    var showGroupedSections: Bool {
+        Prefs.groupByDate && !groupedSections.isEmpty && searchQuery.isEmpty
+            && currentFolder != snoozedFolderId && !filterUnreadOnly
+    }
+
+    private func senderEmail(of mail: MailItem) -> String {
+        mail.fromEmail.isEmpty ? mail.sender : mail.fromEmail
+    }
+
+    private func folderTitle(for mail: MailItem) -> String {
+        systemFolders.first(where: { $0.id == mail.folder })?.title ?? mail.folder
+    }
+
+    /// Сервер знает только реальные папки: из виртуальной «Отложенные»
+    /// действия уходят с pageId реальной папки письма.
+    private func requestFolder(for mail: MailItem) -> String {
+        currentFolder == snoozedFolderId ? mail.folder : currentFolder
+    }
+
+    private var requestFolderForBatch: String? {
+        currentFolder == snoozedFolderId ? nil : currentFolder
+    }
+
+    private func applySearch(_ source: [MailItem]) -> [MailItem] {
+        let q = searchQuery.trimmingCharacters(in: .whitespaces)
+        guard !q.isEmpty else { return source }
+        return source.filter { mail in
+            switch searchScope {
+            case .all:
+                return mail.displayName().range(of: q, options: .caseInsensitive) != nil
+                    || mail.displaySubject().range(of: q, options: .caseInsensitive) != nil
+                    || mail.snippet.range(of: q, options: .caseInsensitive) != nil
+            case .sender:
+                return mail.displayName().range(of: q, options: .caseInsensitive) != nil
+                    || mail.fromEmail.range(of: q, options: .caseInsensitive) != nil
+            case .subject:
+                return mail.displaySubject().range(of: q, options: .caseInsensitive) != nil
+            case .unread:
+                return !mail.read && (
+                    mail.displayName().range(of: q, options: .caseInsensitive) != nil
+                    || mail.displaySubject().range(of: q, options: .caseInsensitive) != nil)
+            case .attachments:
+                return mail.hasAttachments && (
+                    mail.displayName().range(of: q, options: .caseInsensitive) != nil
+                    || mail.displaySubject().range(of: q, options: .caseInsensitive) != nil)
+            }
+        }
     }
 
     func selectFolder(_ folder: String) {
         guard folder != currentFolder else { return }
         currentFolder = folder
+        UserDefaults.standard.set(folder, forKey: "last_folder")
         filterUnreadOnly = false
+        filterAttachments = false
         exitSelection()
         Task { await reload(); await refresh() }
     }
@@ -112,6 +262,8 @@ final class InboxViewModel: ObservableObject {
         searchTask = Task {
             await reload()
             guard !Task.isCancelled else { return }
+            // В виртуальной папке «Отложенные» поиск работает только по кэшу.
+            guard currentFolder != snoozedFolderId else { return }
             try? await Task.sleep(nanoseconds: 300_000_000)
             guard !Task.isCancelled else { return }
             _ = await repo.fetchMails(folder: currentFolder, searchText: q.isEmpty ? nil : q)
@@ -126,12 +278,17 @@ final class InboxViewModel: ObservableObject {
         }
         Task {
             _ = await repo.performMailAction(mailId: mail.id, action: "move-to-folder",
-                                             value: .string("trash"), folder: currentFolder)
+                                             value: .string("trash"), folder: requestFolder(for: mail))
             await reload()
         }
     }
 
     func refresh() async {
+        // Виртуальная папка «Отложенные» существует только на клиенте.
+        guard currentFolder != snoozedFolderId else {
+            await reload()
+            return
+        }
         let now = Date()
         guard now.timeIntervalSince(lastRefreshDate) >= Self.refreshCooldown else {
             showToast("Подождите пару секунд…")
@@ -161,6 +318,7 @@ final class InboxViewModel: ObservableObject {
     }
 
     func loadMore() async {
+        guard currentFolder != snoozedFolderId else { return }
         guard searchQuery.isEmpty, let cursor = mails.map(\.id).min() else { return }
         _ = await repo.fetchMails(folder: currentFolder, page: 1, lastMailId: cursor)
         await reload()
@@ -168,21 +326,21 @@ final class InboxViewModel: ObservableObject {
 
     func toggleStar(_ mail: MailItem) {
         Task {
-            _ = await repo.performMailAction(mailId: mail.id, action: "important", folder: currentFolder)
+            _ = await repo.performMailAction(mailId: mail.id, action: "important", folder: requestFolder(for: mail))
             await reload()
         }
     }
 
     func delete(_ mail: MailItem) {
         Task {
-            _ = await repo.performMailAction(mailId: mail.id, action: "delete", folder: currentFolder)
+            _ = await repo.performMailAction(mailId: mail.id, action: "delete", folder: requestFolder(for: mail))
             await reload()
         }
     }
 
     func setRead(_ mail: MailItem, _ read: Bool) {
         Task {
-            _ = await repo.setReadStatus(mailId: mail.id, read: read, folder: currentFolder)
+            _ = await repo.setReadStatus(mailId: mail.id, read: read, folder: requestFolder(for: mail))
             await reload()
         }
     }
@@ -190,13 +348,65 @@ final class InboxViewModel: ObservableObject {
     func moveToSpam(_ mail: MailItem) {
         Task {
             _ = await repo.performMailAction(mailId: mail.id, action: "move-to-folder",
-                                             value: .string("spam"), folder: currentFolder)
+                                             value: .string("spam"), folder: requestFolder(for: mail))
             await reload()
         }
     }
 
     func markAllRead() {
-        Task { _ = await repo.markAllRead(); await refresh() }
+        Task {
+            let resp = await repo.markAllRead()
+            guard resp.error == nil else {
+                showToast(resp.message ?? "Не удалось отметить письма")
+                return
+            }
+            // Притягиваем свежие флаги прочтения в локальный кэш.
+            _ = await repo.fetchMails(folder: "inbox")
+            await reload()
+            Haptics.success()
+            showToast("Все письма отмечены прочитанными")
+        }
+    }
+
+    // MARK: - Snooze (локальное откладывание)
+
+    func snooze(_ mail: MailItem, until date: Date) {
+        Task {
+            await db.snooze(mailId: mail.id, until: date)
+            await reload()
+            Haptics.medium()
+            showToast("Отложено \(DateUtils.snoozeLabel(until: date))")
+        }
+    }
+
+    func unsnooze(_ mail: MailItem) {
+        Task {
+            await db.unsnooze(mailId: mail.id)
+            await reload()
+            Haptics.medium()
+            showToast("Вернули в «\(folderTitle(for: mail))»")
+        }
+    }
+
+    // MARK: - Чёрный список отправителей
+
+    func blockSender(_ mail: MailItem) {
+        let email = senderEmail(of: mail)
+        guard !email.isEmpty else {
+            showToast("Не удалось определить отправителя")
+            return
+        }
+        BlockedSendersStore.block(email)
+        withAnimation {
+            mails.removeAll { senderEmail(of: $0) == email }
+        }
+        // Серверная блокировка дополняет локальный фильтр.
+        Task {
+            _ = await repo.blockSender(mailId: mail.id)
+            await reload()
+        }
+        Haptics.warning()
+        showToast("Отправитель заблокирован: \(email)")
     }
 
     // MARK: - Batch selection
@@ -230,8 +440,9 @@ final class InboxViewModel: ObservableObject {
         withAnimation { mails.removeAll { ids.contains($0.id) } }
         exitSelection()
         Task {
-            _ = await repo.batchDeleteMails(mailIds: ids, folder: currentFolder)
+            _ = await repo.batchDeleteMails(mailIds: ids, folder: requestFolderForBatch)
             await reload()
+            showToast("Удалено: \(ids.count)")
         }
     }
 
@@ -239,10 +450,18 @@ final class InboxViewModel: ObservableObject {
         let ids = Array(selectedIds)
         exitSelection()
         Task {
-            for id in ids {
-                _ = await repo.setReadStatus(mailId: id, read: read, folder: currentFolder)
+            // Параллельные RPC вместо последовательной очереди.
+            let repo = self.repo
+            let folder = requestFolderForBatch
+            await withTaskGroup(of: Void.self) { group in
+                for id in ids {
+                    group.addTask {
+                        _ = await repo.setReadStatus(mailId: id, read: read, folder: folder)
+                    }
+                }
             }
             await reload()
+            showToast(read ? "Прочитано: \(ids.count)" : "Не прочитано: \(ids.count)")
         }
     }
 
@@ -251,11 +470,18 @@ final class InboxViewModel: ObservableObject {
         withAnimation { mails.removeAll { ids.contains($0.id) } }
         exitSelection()
         Task {
-            for id in ids {
-                _ = await repo.performMailAction(mailId: id, action: "move-to-folder",
-                                                 value: .string("trash"), folder: currentFolder)
+            let repo = self.repo
+            let folder = requestFolderForBatch
+            await withTaskGroup(of: Void.self) { group in
+                for id in ids {
+                    group.addTask {
+                        _ = await repo.performMailAction(mailId: id, action: "move-to-folder",
+                                                         value: .string("trash"), folder: folder)
+                    }
+                }
             }
             await reload()
+            showToast("В корзине: \(ids.count)")
         }
     }
 }
@@ -268,11 +494,16 @@ struct SystemFolder: Identifiable {
     let icon: String
 }
 
+/// Виртуальная папка только на клиенте: отложенные письма остаются в своих
+/// папках, но прячутся из списков до момента пробуждения.
+let snoozedFolderId = "snoozed"
+
 let systemFolders: [SystemFolder] = [
     .init(id: "inbox", title: "Входящие", icon: "tray"),
     .init(id: "sent", title: "Отправленные", icon: "paperplane"),
     .init(id: "important", title: "Важные", icon: "star"),
     .init(id: "draft", title: "Черновики", icon: "doc"),
+    .init(id: snoozedFolderId, title: "Отложенные", icon: "clock"),
     .init(id: "spam", title: "Спам", icon: "exclamationmark.octagon"),
     .init(id: "trash", title: "Корзина", icon: "trash")
 ]
@@ -298,7 +529,10 @@ struct InboxView: View {
     @State private var showCompose = false
     @State private var showAccounts = false
     @State private var showSettings = false
+    @State private var showStats = false
+    @State private var showBatchDeleteAlert = false
     @State private var composeSeed: ComposeSeed?
+    @State private var snoozePickerMail: MailItem?
 
     private var searchBinding: Binding<String> {
         Binding(get: { vm.searchQuery }, set: { vm.onSearchChanged($0) })
@@ -315,11 +549,25 @@ struct InboxView: View {
     var body: some View {
         ZStack(alignment: .bottom) {
             List {
-                ForEach(vm.displayedMails) { mail in
-                    if vm.isSelecting {
-                        selectableRow(mail)
-                    } else {
-                        normalRow(mail)
+                if vm.showGroupedSections {
+                    ForEach(vm.groupedSections) { section in
+                        Section(section.title) {
+                            ForEach(section.mails) { mail in
+                                if vm.isSelecting {
+                                    selectableRow(mail)
+                                } else {
+                                    normalRow(mail)
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    ForEach(vm.displayedMails) { mail in
+                        if vm.isSelecting {
+                            selectableRow(mail)
+                        } else {
+                            normalRow(mail)
+                        }
                     }
                 }
             }
@@ -334,6 +582,11 @@ struct InboxView: View {
                 }
             }
             .refreshable { await vm.refresh() }
+            .sheet(item: $snoozePickerMail) { mail in
+                SnoozeDatePickerSheet { date in
+                    vm.snooze(mail, until: date)
+                }
+            }
             .safeAreaInset(edge: .top) {
                 VStack(spacing: 0) {
                     if !network.isConnected {
@@ -376,7 +629,11 @@ struct InboxView: View {
                 }
             }
             .task { await vm.startIfNeeded() }
-            .onAppear { Task { await vm.reload() } }
+            .onAppear {
+                Task { await vm.reload() }
+                // Возврат из письма: onDisappear остановил polling — возобновляем.
+                vm.startPolling()
+            }
             .onDisappear { vm.stopPolling() }
             .onChange(of: vm.searchScope) { _ in
                 Task { await vm.reload() }
@@ -400,6 +657,15 @@ struct InboxView: View {
             .sheet(isPresented: $showSettings) {
                 SettingsView(accounts: accounts)
             }
+            .sheet(isPresented: $showStats) {
+                MailStatsView()
+            }
+            .alert("Удалить письма?", isPresented: $showBatchDeleteAlert) {
+                Button("Удалить", role: .destructive) { vm.batchDelete() }
+                Button("Отмена", role: .cancel) {}
+            } message: {
+                Text("Выбранные письма будут удалены безвозвратно: \(vm.selectedIds.count)")
+            }
 
             // Toast
             if let toast = vm.refreshToast {
@@ -419,6 +685,15 @@ struct InboxView: View {
     // MARK: - Row variants
 
     @ViewBuilder
+    /// Отступы строк по настройке «list_density».
+    private var rowInsets: EdgeInsets {
+        switch Prefs.listDensity {
+        case .compact: return EdgeInsets(top: 3, leading: 16, bottom: 3, trailing: 12)
+        case .regular: return EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 12)
+        case .spacious: return EdgeInsets(top: 11, leading: 16, bottom: 11, trailing: 12)
+        }
+    }
+
     private func normalRow(_ mail: MailItem) -> some View {
         NavigationLink {
             MailReaderView(mailId: mail.id,
@@ -426,8 +701,17 @@ struct InboxView: View {
         } label: {
             MailRowView(state: MailRowState(mail: mail))
         }
-        .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 12))
+        .listRowInsets(rowInsets)
         .contextMenu {
+            if vm.currentFolder == snoozedFolderId {
+                Button {
+                    vm.unsnooze(mail)
+                } label: {
+                    Label("Вернуть в папку", systemImage: "clock.arrow.circlepath")
+                }
+                Divider()
+            }
+
             Button {
                 composeSeed = makeReplySeed(for: mail)
             } label: {
@@ -463,7 +747,44 @@ struct InboxView: View {
                 }
             }
 
+            if vm.currentFolder != snoozedFolderId {
+                Menu {
+                    ForEach(SnoozePreset.allCases) { preset in
+                        Button {
+                            vm.snooze(mail, until: preset.date())
+                        } label: {
+                            Label(preset.title, systemImage: preset.systemImage)
+                        }
+                    }
+                    Divider()
+                    Button {
+                        snoozePickerMail = mail
+                    } label: {
+                        Label("Своё время…", systemImage: "calendar.badge.clock")
+                    }
+                } label: {
+                    Label("Отложить", systemImage: "clock")
+                }
+
+                Button {
+                    vm.blockSender(mail)
+                } label: {
+                    Label("Заблокировать отправителя", systemImage: "person.slash")
+                }
+            }
+
             Divider()
+
+            Button {
+                Haptics.light()
+                PinnedMailStore.toggle(mail.id)
+                Task { await vm.reload() }
+            } label: {
+                Label(
+                    PinnedMailStore.isPinned(mail.id) ? "Открепить" : "Закрепить",
+                    systemImage: PinnedMailStore.isPinned(mail.id) ? "pin.slash" : "pin"
+                )
+            }
 
             Button { vm.enterSelection(mail) } label: {
                 Label("Выделить", systemImage: "checkmark.circle")
@@ -477,48 +798,104 @@ struct InboxView: View {
             }
         }
         .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+            swipeButton(Prefs.swipeTrailing, mail: mail)
+            if Prefs.swipeTrailing != .delete {
+                Button(role: .destructive) {
+                    Haptics.warning()
+                    vm.delete(mail)
+                } label: {
+                    Label("Удалить", systemImage: "trash")
+                }
+            }
+            if Prefs.swipeTrailing != .spam {
+                Button {
+                    Haptics.medium()
+                    vm.moveToSpam(mail)
+                } label: {
+                    Label("Спам", systemImage: "exclamationmark.octagon")
+                }.tint(.red)
+            }
+        }
+        .swipeActions(edge: .leading, allowsFullSwipe: true) {
+            swipeButton(Prefs.swipeLeading, mail: mail)
+            if Prefs.swipeLeading != .read {
+                Button {
+                    Haptics.light()
+                    vm.setRead(mail, !mail.read)
+                } label: {
+                    Label(mail.read ? "Не прочитано" : "Прочитано",
+                          systemImage: mail.read ? "envelope.badge" : "envelope.open")
+                }.tint(.indigo)
+            }
+            if Prefs.swipeLeading != .copy {
+                Button {
+                    Haptics.medium()
+                    let emailToCopy = mail.fromEmail.isEmpty ? mail.sender : mail.fromEmail
+                    ClipboardManager.shared.copySecurely(text: emailToCopy)
+                } label: {
+                    Label("Копировать email", systemImage: "doc.on.doc")
+                }.tint(.blue)
+            }
+        }
+        .onAppear {
+            if mail.id == vm.displayedMails.last?.id {
+                Task { await vm.loadMore() }
+            }
+        }
+    }
+
+    /// Кнопка свайпа по настройке: назначаемое действие полного свайпа.
+    @ViewBuilder
+    private func swipeButton(_ kind: SwipeActionKind, mail: MailItem) -> some View {
+        switch kind {
+        case .trash:
             Button {
                 Haptics.medium()
                 vm.moveToTrash(mail)
             } label: {
                 Label("В корзину", systemImage: "trash")
-            }.tint(.orange)
-
+            }
+            .tint(.orange)
+        case .delete:
             Button(role: .destructive) {
                 Haptics.warning()
                 vm.delete(mail)
             } label: {
                 Label("Удалить", systemImage: "trash")
             }
-
-            Button {
-                Haptics.medium()
-                vm.moveToSpam(mail)
-            } label: {
-                Label("Спам", systemImage: "exclamationmark.octagon")
-            }.tint(.red)
-        }
-        .swipeActions(edge: .leading, allowsFullSwipe: true) {
-            Button {
-                Haptics.medium()
-                let emailToCopy = mail.fromEmail.isEmpty ? mail.sender : mail.fromEmail
-                ClipboardManager.shared.copySecurely(text: emailToCopy)
-            } label: {
-                Label("Копировать email", systemImage: "doc.on.doc")
-            }.tint(.blue)
-
+        case .read:
             Button {
                 Haptics.light()
                 vm.setRead(mail, !mail.read)
             } label: {
                 Label(mail.read ? "Не прочитано" : "Прочитано",
                       systemImage: mail.read ? "envelope.badge" : "envelope.open")
-            }.tint(.indigo)
-        }
-        .onAppear {
-            if mail.id == vm.displayedMails.last?.id {
-                Task { await vm.loadMore() }
             }
+            .tint(.indigo)
+        case .snooze:
+            Button {
+                snoozePickerMail = mail
+            } label: {
+                Label("Отложить…", systemImage: "clock")
+            }
+            .tint(.teal)
+        case .spam:
+            Button {
+                Haptics.medium()
+                vm.moveToSpam(mail)
+            } label: {
+                Label("Спам", systemImage: "exclamationmark.octagon")
+            }
+            .tint(.red)
+        case .copy:
+            Button {
+                Haptics.medium()
+                let emailToCopy = mail.fromEmail.isEmpty ? mail.sender : mail.fromEmail
+                ClipboardManager.shared.copySecurely(text: emailToCopy)
+            } label: {
+                Label("Копировать email", systemImage: "doc.on.doc")
+            }
+            .tint(.blue)
         }
     }
 
@@ -530,7 +907,7 @@ struct InboxView: View {
                 .font(.title3)
             MailRowView(state: MailRowState(mail: mail))
         }
-        .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 12))
+        .listRowInsets(rowInsets)
         .contentShape(Rectangle())
         .onTapGesture { vm.toggleSelection(for: mail) }
     }
@@ -547,7 +924,8 @@ struct InboxView: View {
                 Haptics.warning(); vm.batchMoveToTrash()
             }
             batchButton(icon: "trash.fill", label: "Удалить") {
-                Haptics.warning(); vm.batchDelete()
+                Haptics.warning()
+                showBatchDeleteAlert = true
             }
         }
         .padding(.vertical, 6)
@@ -615,9 +993,19 @@ struct InboxView: View {
                     Haptics.light()
                     vm.filterUnreadOnly.toggle()
                 }
-                chip("Важные", active: vm.currentFolder == "important") {
+                chip("Важные", active: vm.currentFolder == "important",
+                     badge: vm.importantUnread > 0 && vm.currentFolder != "important" ? vm.importantUnread : nil) {
                     Haptics.light()
                     vm.selectFolder("important")
+                }
+                chip("С вложениями", active: vm.filterAttachments) {
+                    Haptics.light()
+                    vm.filterAttachments.toggle()
+                }
+                chip("Отложенные", active: vm.currentFolder == snoozedFolderId,
+                     badge: vm.snoozedCount > 0 && vm.currentFolder != snoozedFolderId ? vm.snoozedCount : nil) {
+                    Haptics.light()
+                    vm.selectFolder(snoozedFolderId)
                 }
                 chip("Отправленные", active: vm.currentFolder == "sent") {
                     Haptics.light()
@@ -683,6 +1071,13 @@ struct InboxView: View {
     private var overflowMenu: some View {
         Menu {
             Button {
+                Haptics.light()
+                showStats = true
+            } label: {
+                Label("Статистика почты", systemImage: "chart.bar.xaxis")
+            }
+
+            Button {
                 Haptics.medium()
                 vm.markAllRead()
             } label: {
@@ -703,20 +1098,35 @@ struct InboxView: View {
     }
 
     private var emptyState: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "envelope.open")
-                .resizable().scaledToFit().frame(width: 56, height: 56)
-                .foregroundStyle(.secondary)
-            Text(vm.filterUnreadOnly ? "Нет непрочитанных писем" : "В этой папке нет писем")
-                .foregroundStyle(.secondary)
-            Button {
-                Haptics.light()
-                Task { await vm.refresh() }
-            } label: {
-                Label("Обновить", systemImage: "arrow.clockwise")
-            }
+        EmptyStateView(
+            icon: emptyIcon,
+            title: emptyTitle,
+            subtitle: emptySubtitle,
+            actionTitle: vm.searchQuery.isEmpty ? "Обновить" : nil,
+            action: { Task { await vm.refresh() } })
+    }
+
+    private var emptyIcon: String {
+        if !vm.searchQuery.isEmpty { return "magnifyingglass" }
+        if vm.currentFolder == snoozedFolderId { return "clock" }
+        return "envelope.open"
+    }
+
+    private var emptyTitle: String {
+        if !vm.searchQuery.isEmpty { return "Ничего не найдено" }
+        if vm.currentFolder == snoozedFolderId { return "Нет отложенных писем" }
+        if vm.filterUnreadOnly { return "Нет непрочитанных писем" }
+        return "В этой папке пусто"
+    }
+
+    private var emptySubtitle: String? {
+        if !vm.searchQuery.isEmpty {
+            return "Попробуйте изменить запрос или область поиска"
         }
-        .padding()
+        if vm.currentFolder == snoozedFolderId {
+            return "Отложенные письма спрятаны из списков и вернутся в выбранное время"
+        }
+        return nil
     }
 }
 
@@ -727,6 +1137,7 @@ struct AccountSwitcherView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var showSettings = false
     @State private var showAddAccount = false
+    @State private var accountPendingRemoval: String?
 
     var body: some View {
         NavigationStack {
@@ -760,7 +1171,7 @@ struct AccountSwitcherView: View {
                         }
                         .swipeActions(edge: .trailing) {
                             Button(role: .destructive) {
-                                Task { await accounts.remove(email) }
+                                accountPendingRemoval = email
                             } label: {
                                 Label("Удалить", systemImage: "trash")
                             }
@@ -803,6 +1214,20 @@ struct AccountSwitcherView: View {
             }
             .sheet(isPresented: $showAddAccount) {
                 AddAccountView(accounts: accounts)
+            }
+            .alert("Удалить аккаунт?", isPresented: Binding(
+                get: { accountPendingRemoval != nil },
+                set: { if !$0 { accountPendingRemoval = nil } }
+            )) {
+                Button("Удалить", role: .destructive) {
+                    if let email = accountPendingRemoval {
+                        Task { await accounts.remove(email) }
+                    }
+                    accountPendingRemoval = nil
+                }
+                Button("Отмена", role: .cancel) { accountPendingRemoval = nil }
+            } message: {
+                Text("Аккаунт \(accountPendingRemoval ?? "") будет удалён с устройства вместе с локальным кэшем. При необходимости войдите заново.")
             }
         }
     }

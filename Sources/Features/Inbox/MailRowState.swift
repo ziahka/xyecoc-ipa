@@ -10,6 +10,7 @@ struct MailRowState: Identifiable, Equatable {
     let isRead: Bool
     let isImportant: Bool
     let hasAttachments: Bool
+    let isPinned: Bool
     let tagName: String?
     let tagColorHex: String?
 
@@ -19,10 +20,11 @@ struct MailRowState: Identifiable, Equatable {
         self.email = !mail.fromEmail.isEmpty ? mail.fromEmail : mail.sender
         self.subject = mail.displaySubject()
         self.snippet = mail.snippet
-        self.formattedDate = DateUtils.formatDate(mail.createdAt)
+        self.formattedDate = DateUtils.formatDateRelative(mail.createdAt)
         self.isRead = mail.read
         self.isImportant = mail.important
         self.hasAttachments = mail.hasAttachments
+        self.isPinned = PinnedMailStore.isPinned(mail.id)
         self.tagName = mail.tagName
         self.tagColorHex = mail.tagColor
     }

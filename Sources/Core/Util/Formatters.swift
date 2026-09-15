@@ -33,6 +33,64 @@ enum DateUtils {
         return String(raw.split(separator: "T").first ?? Substring(raw))
     }
 
+    /// Parses the ISO-ish backend timestamps ("2024-01-02T03:04:05" with an
+    /// optional ".fraction" part). Returns nil for empty/unparseable input.
+    static func parseISO(_ raw: String?) -> Date? {
+        guard let raw = raw, !raw.isEmpty else { return nil }
+        let trimmed = String(raw.split(separator: ".").first ?? Substring(raw))
+        return isoParser.date(from: trimmed)
+    }
+
+    // Compact list formatting: "14:05" today, "Вчера", "05 мар" this year,
+    // "05 мар 2023" for older years. Falls back to formatDate.
+    private static let timeOnlyFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale.current
+        f.dateFormat = "HH:mm"
+        return f
+    }()
+
+    private static let dayMonthFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale.current
+        f.dateFormat = "dd MMM"
+        return f
+    }()
+
+    private static let dayMonthYearFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale.current
+        f.dateFormat = "dd MMM yyyy"
+        return f
+    }()
+
+    private static let yesterdayWord = NSLocalizedString("Вчера", comment: "List row date for yesterday")
+
+    static func formatDateRelative(_ raw: String?) -> String {
+        guard let date = parseISO(raw) else { return formatDate(raw) }
+        let calendar = Calendar.current
+        if calendar.isDateInToday(date) {
+            return timeOnlyFormatter.string(from: date)
+        }
+        if calendar.isDateInYesterday(date) {
+            return yesterdayWord
+        }
+        let yearDelta = calendar.dateComponents([.year], from: date, to: Date()).year ?? 0
+        if yearDelta >= 1 {
+            return dayMonthYearFormatter.string(from: date)
+        }
+        return dayMonthFormatter.string(from: date)
+    }
+
+    /// Label for a snooze deadline: "до 20:00" today, "до 12 сен, 09:00" otherwise.
+    static func snoozeLabel(until date: Date) -> String {
+        let calendar = Calendar.current
+        if calendar.isDateInToday(date) {
+            return "до " + timeOnlyFormatter.string(from: date)
+        }
+        return "до " + dayMonthFormatter.string(from: date) + ", " + timeOnlyFormatter.string(from: date)
+    }
+
     /// Port of `formatFileSize`.
     static func formatFileSize(_ bytes: Int64) -> String {
         if bytes < 1024 { return "\(bytes) B" }
@@ -175,5 +233,93 @@ enum AppLanguage: String, CaseIterable, Identifiable {
 
     static var currentCode: String {
         UserDefaults.standard.string(forKey: "app_language") ?? "ru"
+    }
+}
+
+/// Reading font size for the mail reader WebView ("mail_font_size" setting).
+enum MailFontSize: String, CaseIterable, Identifiable {
+    case small = "small"
+    case medium = "medium"
+    case large = "large"
+    case extraLarge = "extra_large"
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .small: return "Мелкий"
+        case .medium: return "Обычный"
+        case .large: return "Крупный"
+        case .extraLarge: return "Очень крупный"
+        }
+    }
+
+    /// Base body font-size in CSS points used by the reader HTML template.
+    var points: Int {
+        switch self {
+        case .small: return 14
+        case .medium: return 16
+        case .large: return 19
+        case .extraLarge: return 23
+        }
+    }
+}
+
+// MARK: - Snooze presets
+
+/// Presets for the local "отложить письмо" feature. The mail stays cached in
+/// its own folder but is hidden from lists until the wake-up moment.
+enum SnoozePreset: CaseIterable, Identifiable {
+    case oneHour
+    case threeHours
+    case thisEvening
+    case tomorrowMorning
+    case nextWeek
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .oneHour: return "На час"
+        case .threeHours: return "На 3 часа"
+        case .thisEvening: return "Вечером (20:00)"
+        case .tomorrowMorning: return "Завтра утром (9:00)"
+        case .nextWeek: return "На неделю"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .oneHour: return "clock"
+        case .threeHours: return "alarm"
+        case .thisEvening: return "sunset.fill"
+        case .tomorrowMorning: return "sunrise.fill"
+        case .nextWeek: return "calendar.badge.clock"
+        }
+    }
+
+    /// Wake-up date computed from the given moment.
+    func date(from now: Date = Date(), calendar: Calendar = .current) -> Date {
+        switch self {
+        case .oneHour:
+            return now.addingTimeInterval(3600)
+        case .threeHours:
+            return now.addingTimeInterval(3 * 3600)
+        case .thisEvening:
+            let day = calendar.dateComponents([.year, .month, .day], from: now)
+            var evening = calendar.date(from: DateComponents(
+                year: day.year, month: day.month, day: day.day, hour: 20))
+                ?? now.addingTimeInterval(4 * 3600)
+            if evening <= now {
+                evening = evening.addingTimeInterval(86400)
+            }
+            return evening
+        case .tomorrowMorning:
+            let base = calendar.startOfDay(for: now)
+            return calendar.date(byAdding: DateComponents(day: 1, hour: 9), to: base)
+                ?? now.addingTimeInterval(86400 + 3600)
+        case .nextWeek:
+            return now.addingTimeInterval(7 * 86400)
+        }
     }
 }

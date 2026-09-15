@@ -27,6 +27,7 @@ struct ComposeSeed: Identifiable {
 final class ComposeViewModel: ObservableObject {
 
     @Published var isSending = false
+    @Published var isAutoSaving = false
     @Published var signature = ""
     @Published var signatureForReply = true
     @Published var signatureForNew = true
@@ -45,13 +46,16 @@ final class ComposeViewModel: ObservableObject {
     }
 
     /// Returns nil on success, or a localized error message on failure.
+    /// Автосохранение черновика идёт под isAutoSaving, чтобы не мигать
+    /// спиннером на кнопке отправки каждые несколько секунд.
     func send(recipients: String,
               subject: String,
               body: String,
               attachments: [Attachment],
               isDraft: Bool,
               isReply: Bool = false,
-              from: String? = nil) async -> String? {
+              from: String? = nil,
+              isAutosave: Bool = false) async -> String? {
         let users = recipients
             .split(separator: ",")
             .map { $0.trimmingCharacters(in: .whitespaces) }
@@ -66,14 +70,14 @@ final class ComposeViewModel: ObservableObject {
             fullBody = body
         }
 
-        isSending = true
+        if isAutosave { isAutoSaving = true } else { isSending = true }
         let response = await mailRepo.sendMail(recipients: users,
                                                subject: subject,
                                                messageHtml: fullBody,
                                                attachments: attachments,
                                                isDraft: isDraft,
                                                from: from)
-        isSending = false
+        if isAutosave { isAutoSaving = false } else { isSending = false }
         return response.isSuccess() ? nil : (response.message ?? "Ошибка при отправке письма")
     }
 }
@@ -98,6 +102,12 @@ struct ComposeView: View {
     @State private var showSendDisabled = false
     @State private var showDraftAlert = false
     @State private var autoSaveTask: Task<Void, Never>?
+    @State private var lastAutoSavedKey: String?
+    @AppStorage("confirm_send") private var confirmSend = false
+    @State private var showConfirmSend = false
+    @State private var undoActive = false
+    @State private var undoCountdown = 0
+    @State private var undoTask: Task<Void, Never>?
 
     private let senderEmail = KeychainManager.shared.getEmail() ?? ""
     @State private var selectedSender: String
@@ -105,6 +115,13 @@ struct ComposeView: View {
 
     private var hasContent: Bool {
         !to.isEmpty || !subject.isEmpty || !bodyText.isEmpty || !attachments.isEmpty
+    }
+
+    /// Отпечаток содержимого: autosave отправляет черновик на сервер,
+    /// только когда он реально изменился с прошлой автосохранки.
+    private var draftContentKey: String {
+        [to, subject, bodyText, attachments.map(\.fileName).joined(separator: ",")]
+            .joined(separator: "\u{1F}")
     }
 
     init(seed: ComposeSeed = ComposeSeed()) {
@@ -177,19 +194,53 @@ struct ComposeView: View {
         } message: {
             Text("У вас есть несохранённые изменения.")
         }
+        .confirmationDialog("Отправить письмо?", isPresented: $showConfirmSend, titleVisibility: .visible) {
+            Button("Отправить") { Task { await beginSend() } }
+            Button("Отмена", role: .cancel) { }
+        } message: {
+            Text("Получатели: \(to)")
+        }
+        .overlay(alignment: .bottom) {
+            if undoActive {
+                HStack(spacing: 10) {
+                    Image(systemName: "paperplane.fill")
+                        .foregroundStyle(Color.accentColor)
+                    Text("Письмо будет отправлено через \(undoCountdown) с")
+                        .font(.subheadline)
+                    Spacer()
+                    Button("Отменить") { cancelUndoSend() }
+                        .font(.subheadline.weight(.semibold))
+                }
+                .padding(12)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+                .padding(.horizontal, 16)
+                .padding(.bottom, 10)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .animation(.easeInOut(duration: 0.2), value: undoActive)
         .onAppear { startAutoSave() }
-        .onDisappear { autoSaveTask?.cancel() }
+        .onDisappear {
+            autoSaveTask?.cancel()
+            undoTask?.cancel()
+        }
     }
 
     private func startAutoSave() {
         autoSaveTask?.cancel()
         autoSaveTask = Task {
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 15_000_000_000)
-                guard !Task.isCancelled, hasContent, !vm.isSending else { continue }
-                _ = await vm.send(recipients: to, subject: subject, body: bodyText,
-                                  attachments: attachments, isDraft: true,
-                                  isReply: replyMode, from: selectedSender)
+                try? await Task.sleep(nanoseconds: 5_000_000_000)
+                guard !Task.isCancelled, hasContent, !vm.isSending, !vm.isAutoSaving else { continue }
+                let key = draftContentKey
+                guard key != lastAutoSavedKey else { continue }
+                let error = await vm.send(recipients: to, subject: subject, body: bodyText,
+                                          attachments: attachments, isDraft: true,
+                                          isReply: replyMode, from: selectedSender,
+                                          isAutosave: true)
+                if error == nil {
+                    lastAutoSavedKey = key
+                }
             }
         }
     }
@@ -384,11 +435,50 @@ struct ComposeView: View {
             errorText = "Укажите хотя бы одного получателя"
             return
         }
+        if confirmSend {
+            showConfirmSend = true
+            return
+        }
+        await beginSend()
+    }
+
+    /// Окно отмены («undo_send»): письмо реально уходит через N секунд,
+    /// до этого отправку можно отменить баннером внизу экрана.
+    private func beginSend() async {
+        let window = Prefs.undoSeconds
+        guard window > 0 else {
+            await deliverNow()
+            return
+        }
+        undoActive = true
+        undoCountdown = window
+        undoTask?.cancel()
+        undoTask = Task {
+            while undoCountdown > 0 && !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                if Task.isCancelled { return }
+                undoCountdown -= 1
+            }
+            guard !Task.isCancelled else { return }
+            undoActive = false
+            await deliverNow()
+        }
+    }
+
+    private func cancelUndoSend() {
+        undoTask?.cancel()
+        undoTask = nil
+        undoActive = false
+        Haptics.warning()
+    }
+
+    private func deliverNow() async {
         let error = await vm.send(recipients: to, subject: subject, body: bodyText,
                                 attachments: attachments, isDraft: false,
                                 isReply: replyMode, from: selectedSender)
         if error == nil {
             Haptics.success()
+            autoSaveTask?.cancel()
             dismiss()
         } else if let err = error {
             Haptics.error()
@@ -407,6 +497,7 @@ struct ComposeView: View {
                                 isReply: replyMode, from: selectedSender)
         if error == nil {
             Haptics.light()
+            autoSaveTask?.cancel()
             dismiss()
         } else {
             Haptics.error()

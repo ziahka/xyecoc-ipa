@@ -9,6 +9,7 @@
 //
 
 import SwiftUI
+import UIKit
 
 @MainActor
 final class AccountStore: ObservableObject {
@@ -61,6 +62,11 @@ final class AccountStore: ObservableObject {
             await MailDatabase.shared.activate(account: active)
         }
         reload()
+        // The freshly promoted inbox will refresh the badge with its own
+        // count; clearing it here covers the "no accounts left" case.
+        if activeEmail == nil {
+            BadgeCounter.set(0)
+        }
     }
 
     /// Log out of the currently active account.

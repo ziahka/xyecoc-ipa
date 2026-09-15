@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 // MARK: - ViewModel
 
@@ -128,6 +129,22 @@ final class SettingsViewModel: ObservableObject {
         await db.clearAll()
         localCacheSize = DateUtils.formatFileSize(0)
     }
+
+    /// Keeps the home-screen badge in step with the cached unread count
+    /// (по «badge_scope»: входящие или все папки) after the user flips the setting.
+    func syncIconBadge(enabled: Bool) {
+        Task {
+            let count: Int
+            if !enabled {
+                count = 0
+            } else if Prefs.badgeScope == .all {
+                count = await db.unreadCountAll()
+            } else {
+                count = await db.unreadCount(folder: "inbox")
+            }
+            BadgeCounter.set(count)
+        }
+    }
 }
 
 // MARK: - Root Settings Screen
@@ -141,6 +158,24 @@ struct SettingsView: View {
     @AppStorage("app_theme") private var selectedTheme: AppTheme = .cyan
     @AppStorage("app_language") private var selectedLanguage: AppLanguage = .ru
     @AppStorage("app_appearance") private var appearance: AppAppearance = .system
+    @AppStorage("mail_font_size") private var mailFontSize: MailFontSize = .medium
+    @AppStorage("block_remote_images") private var blockRemoteImages = false
+    @AppStorage("app_icon_badge") private var appIconBadge = true
+    @AppStorage("app_autolock") private var autoLockDelay: AutoLockDelay = .immediately
+    @AppStorage("list_density") private var listDensity: ListDensity = .regular
+    @AppStorage("row_preview") private var rowPreview: RowPreview = .full
+    @AppStorage("group_by_date") private var groupByDate = false
+    @AppStorage("sort_order") private var sortOrder: SortOrder = .newest
+    @AppStorage("swipe_trailing") private var swipeTrailing: SwipeActionKind = .trash
+    @AppStorage("swipe_leading") private var swipeLeading: SwipeActionKind = .copy
+    @AppStorage("start_folder") private var startFolder: StartFolder = .inbox
+    @AppStorage("poll_interval") private var pollInterval: PollInterval = .s30
+    @AppStorage("badge_scope") private var badgeScope: BadgeScope = .inbox
+    @AppStorage("undo_send") private var undoSend: UndoSendWindow = .off
+    @AppStorage("confirm_send") private var confirmSend = false
+    @AppStorage("privacy_switcher") private var privacySwitcher = false
+    @AppStorage("haptics_enabled") private var hapticsEnabled = true
+    @AppStorage("notify_new_mail") private var notifyNewMail = true
 
     @State private var showPasswordSheet = false
     @State private var showReserveSheet = false
@@ -148,6 +183,7 @@ struct SettingsView: View {
     @State private var showSetPinSheet = false
     @State private var showFeedbackSheet = false
     @State private var showDeleteAlert = false
+    @State private var showClearCacheAlert = false
     @State private var deletePassword = ""
 
     @State private var newPin = ""
@@ -162,6 +198,9 @@ struct SettingsView: View {
                 appearanceAndLangSection
                 AppIconPickerView()
                 securitySection
+                privacySection
+                listSection
+                sendingSection
                 mailManagementSection
                 storageAndCacheSection
                 communitySection
@@ -196,6 +235,14 @@ struct SettingsView: View {
             }
         } message: {
             Text("Это действие безвозвратно удалит почтовый ящик и все связанные письма.")
+        }
+        .alert("Очистить локальный кэш?", isPresented: $showClearCacheAlert) {
+            Button("Очистить", role: .destructive) {
+                Task { await vm.clearLocalCache() }
+            }
+            Button("Отмена", role: .cancel) {}
+        } message: {
+            Text("Письма и вложения исчезнут с устройства. При следующем обновлении список подтянется с сервера заново.")
         }
     }
 
@@ -270,12 +317,22 @@ struct SettingsView: View {
                     Text(lang.title).tag(lang)
                 }
             }
+
+            Picker("Размер текста писем", selection: $mailFontSize) {
+                ForEach(MailFontSize.allCases) { size in
+                    Text(size.title).tag(size)
+                }
+            }
+
+            Toggle(isOn: $hapticsEnabled) {
+                Label("Вибрация", systemImage: "iphone.radiowaves.left.and.right")
+            }
         }
     }
 
     @ViewBuilder
     private var securitySection: some View {
-        Section("Безопасность устройства") {
+        Section {
             if security.hasPin {
                 Button("Изменить PIN-код") {
                     resetPinFlow()
@@ -293,11 +350,128 @@ struct SettingsView: View {
                     showSetPinSheet = true
                 }
             }
+
+            Picker("Блокировать", selection: $autoLockDelay) {
+                ForEach(AutoLockDelay.allCases) { delay in
+                    Text(delay.title).tag(delay)
+                }
+            }
+        } header: {
+            Text("Безопасность устройства")
+        } footer: {
+            Text("Через выбранное время после ухода в фон приложение потребует PIN или биометрию при возврате.")
+        }
+    }
+
+    private var privacySection: some View {
+        Section {
+            Toggle(isOn: $blockRemoteImages) {
+                Label("Блокировать внешние изображения", systemImage: "photo.badge.arrow.down")
+            }
+
+            Toggle(isOn: $privacySwitcher) {
+                Label("Скрывать в переключателе задач", systemImage: "eye.slash")
+            }
+        } header: {
+            Text("Приватность")
+        } footer: {
+            Text("Внешние картинки в письмах не будут загружаться — это скрывает отслеживающие пиксели. Изображения с серверов xyecoc.com продолжат отображаться. Щит закрывает письма в мультизадачности.")
+        }
+    }
+
+    /// Список: плотность, превью, группировка, сортировка, свайпы.
+    private var listSection: some View {
+        Section {
+            Picker("Плотность списка", selection: $listDensity) {
+                ForEach(ListDensity.allCases) { d in
+                    Text(d.title).tag(d)
+                }
+            }
+
+            Picker("Превью письма", selection: $rowPreview) {
+                ForEach(RowPreview.allCases) { p in
+                    Text(p.title).tag(p)
+                }
+            }
+
+            Toggle(isOn: $groupByDate) {
+                Label("Группировать по датам", systemImage: "calendar")
+            }
+
+            Picker("Сортировка", selection: $sortOrder) {
+                ForEach(SortOrder.allCases) { s in
+                    Text(s.title).tag(s)
+                }
+            }
+
+            Picker("Свайп влево (справа)", selection: $swipeTrailing) {
+                ForEach(SwipeActionKind.allCases) { a in
+                    Text(a.title).tag(a)
+                }
+            }
+
+            Picker("Свайп вправо (слева)", selection: $swipeLeading) {
+                ForEach(SwipeActionKind.allCases) { a in
+                    Text(a.title).tag(a)
+                }
+            }
+        } header: {
+            Text("Список писем")
+        } footer: {
+            Text("Первое действие свайпа выполняется полным свайпом. Изменения применяются к любому списку писем.")
+        }
+    }
+
+    /// Отправка: окно отмены и подтверждение.
+    private var sendingSection: some View {
+        Section {
+            Picker("Отмена отправки", selection: $undoSend) {
+                ForEach(UndoSendWindow.allCases) { w in
+                    Text(w.title).tag(w)
+                }
+            }
+
+            Toggle(isOn: $confirmSend) {
+                Label("Подтверждать отправку", systemImage: "checkmark.seal")
+            }
+        } header: {
+            Text("Отправка")
+        } footer: {
+            Text("После нажатия «отправить» письмо уходит через выбранное время — его можно успеть отменить.")
         }
     }
 
     private var mailManagementSection: some View {
-        Section("Почта") {
+        Section {
+            Toggle(isOn: $appIconBadge) {
+                Label("Бейдж непрочитанных на иконке", systemImage: "app.badge")
+            }
+            .onChange(of: appIconBadge) { enabled in
+                vm.syncIconBadge(enabled: enabled)
+            }
+
+            Picker("Бейдж считает", selection: $badgeScope) {
+                ForEach(BadgeScope.allCases) { s in
+                    Text(s.title).tag(s)
+                }
+            }
+
+            Picker("Папка при запуске", selection: $startFolder) {
+                ForEach(StartFolder.allCases) { f in
+                    Text(f.title).tag(f)
+                }
+            }
+
+            Picker("Автообновление", selection: $pollInterval) {
+                ForEach(PollInterval.allCases) { i in
+                    Text(i.title).tag(i)
+                }
+            }
+
+            Toggle(isOn: $notifyNewMail) {
+                Label("Сообщать о новых письмах", systemImage: "envelope.badge")
+            }
+
             NavigationLink {
                 SignaturesEditorView(vm: vm)
             } label: {
@@ -321,6 +495,16 @@ struct SettingsView: View {
             } label: {
                 Label("Папки и теги", systemImage: "folder.badge.gearshape")
             }
+
+            NavigationLink {
+                BlockedSendersView()
+            } label: {
+                Label("Чёрный список отправителей", systemImage: "person.slash")
+            }
+        } header: {
+            Text("Почта")
+        } footer: {
+            Text("«Сообщать о новых письмах» показывает тост, когда опрос замечает новое входящее. При «вручную» письма обновляются потягиванием списка.")
         }
     }
 
@@ -348,7 +532,7 @@ struct SettingsView: View {
             }
 
             Button(role: .destructive) {
-                Task { await vm.clearLocalCache() }
+                showClearCacheAlert = true
             } label: {
                 Label("Очистить кэш", systemImage: "trash.circle")
             }

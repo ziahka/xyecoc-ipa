@@ -30,9 +30,11 @@ struct LockOverlayView: View {
                     Text("Введите PIN-код")
                         .font(.title2.bold())
 
-                    Text("Для доступа к почте")
+                    Text(security.isInLockout
+                         ? "Слишком много попыток. Повтор через \(security.lockoutRemaining) с"
+                         : "Для доступа к почте")
                         .font(.footnote)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(security.isInLockout ? .red : .secondary)
                 }
 
                 Spacer(minLength: 20)
@@ -83,6 +85,11 @@ struct LockOverlayView: View {
                         }
                     }
                 }
+                .opacity(security.isInLockout ? 0.35 : 1)
+                .disabled(security.isInLockout)
+                .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { _ in
+                    security.refreshLockout()
+                }
 
                 Spacer(minLength: 28)
 
@@ -96,7 +103,8 @@ struct LockOverlayView: View {
             .padding(.horizontal, 24)
         }
         .task {
-            if security.isBiometricsAvailable {
+            security.refreshLockout()
+            if security.isBiometricsAvailable && !security.isInLockout {
                 _ = await security.authenticateWithBiometrics()
             }
         }
@@ -114,6 +122,7 @@ struct LockOverlayView: View {
     }
 
     private func handleDigit(_ digit: String) {
+        guard !security.isInLockout else { return }
         guard enteredPin.count < 4 else { return }
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
         enteredPin.append(digit)
