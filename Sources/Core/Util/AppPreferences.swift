@@ -153,4 +153,7 @@ enum Prefs {
     static var notifyNewMail: Bool {
         UserDefaults.standard.object(forKey: "notify_new_mail") as? Bool ?? true
     }
+    static var keepaliveEnabled: Bool {
+        UserDefaults.standard.object(forKey: "background_keepalive") as? Bool ?? false
+    }
 }

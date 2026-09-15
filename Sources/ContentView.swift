@@ -105,6 +105,12 @@ struct ContentView: View {
             .preferredColorScheme(appearance.colorScheme)
             .environment(\EnvironmentValues.locale, Locale(identifier: selectedLanguage.rawValue))
             .task { await accounts.syncActiveCache() }
+            .task {
+                // Фоновая проверка писем: тихий аудиотрек, если включён.
+                if Prefs.keepaliveEnabled {
+                    SilentKeepAlive.shared.start()
+                }
+            }
 
             if security.isLocked {
                 LockOverlayView {

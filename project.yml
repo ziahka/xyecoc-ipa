@@ -21,6 +21,8 @@ targets:
         CFBundleShortVersionString: "2.0.0"
         CFBundleVersion: "7"
         NSFaceIDUsageDescription: "Используется для быстрой и безопасной разблокировки почтового ящика."
+        UIBackgroundModes:
+          - audio
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
