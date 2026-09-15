@@ -87,10 +87,8 @@ final class ApiClient {
                 let retried = await rawRequest(retryPayload)
                 if !Self.isMailDefaultEcho(retryPayload, retried) { return retried }
             }
-            var failed = response
-            failed.status = 0
-            failed.error = "authenticate error"
-            return failed
+            return ApiResponse(status: 0, service: response.service,
+                               action: response.action, error: "authenticate error")
         }
         return response
     }
