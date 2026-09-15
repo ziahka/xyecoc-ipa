@@ -12,7 +12,9 @@
 
 import Foundation
 
-final class MailRepository {
+/// @unchecked Sendable: все хранимые зависимости — неизменяемые let
+/// (синглтоны ApiClient/KeychainManager и актор MailDatabase).
+final class MailRepository: @unchecked Sendable {
 
     private let api: ApiClient
     private let db: MailDatabase

@@ -35,7 +35,7 @@ final class InboxViewModel: ObservableObject {
     /// lives in Settings ("app_icon_badge"); turning it off clears the badge.
     func applyIconBadge(_ count: Int) {
         let enabled = UserDefaults.standard.object(forKey: "app_icon_badge") as? Bool ?? true
-        UIApplication.shared.setApplicationIconBadgeNumber(enabled ? count : 0)
+        BadgeCounter.set(enabled ? count : 0)
     }
 
     private let repo = MailRepository()
@@ -344,6 +344,7 @@ final class InboxViewModel: ObservableObject {
         exitSelection()
         Task {
             // Параллельные RPC вместо последовательной очереди.
+            let repo = self.repo
             let folder = requestFolderForBatch
             await withTaskGroup(of: Void.self) { group in
                 for id in ids {
@@ -362,6 +363,7 @@ final class InboxViewModel: ObservableObject {
         withAnimation { mails.removeAll { ids.contains($0.id) } }
         exitSelection()
         Task {
+            let repo = self.repo
             let folder = requestFolderForBatch
             await withTaskGroup(of: Void.self) { group in
                 for id in ids {

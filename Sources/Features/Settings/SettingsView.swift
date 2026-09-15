@@ -135,7 +135,7 @@ final class SettingsViewModel: ObservableObject {
     func syncIconBadge(enabled: Bool) {
         Task {
             let count = enabled ? await db.unreadCount(folder: "inbox") : 0
-            UIApplication.shared.setApplicationIconBadgeNumber(count)
+            BadgeCounter.set(count)
         }
     }
 }

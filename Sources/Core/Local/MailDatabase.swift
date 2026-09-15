@@ -60,7 +60,7 @@ actor MailDatabase {
             })
         }
 
-        loadSnoozes()
+        snoozes = Self.readSnoozes(url: appDir.appendingPathComponent("snooze-\(Self.sanitize(account)).json"))
     }
 
     // MARK: - Per-account switching
@@ -74,7 +74,7 @@ actor MailDatabase {
         htmlCache.removeAll()
         snoozes.removeAll()
         load()
-        loadSnoozes()
+        snoozes = Self.readSnoozes(url: snoozeURL)
     }
 
     func deleteCache(forAccount account: String) {
@@ -275,10 +275,11 @@ actor MailDatabase {
         appDir.appendingPathComponent("snooze-\(Self.sanitize(activeAccount)).json")
     }
 
-    private func loadSnoozes() {
-        guard let data = try? Data(contentsOf: snoozeURL),
-              let entries = try? JSONDecoder().decode([SnoozeEntry].self, from: data) else { return }
-        snoozes = Dictionary(uniqueKeysWithValues: entries.map { ($0.id, $0.until) })
+    /// Static-члены актора не изолированы — так метод можно звать из init.
+    private static func readSnoozes(url: URL) -> [Int64: Date] {
+        guard let data = try? Data(contentsOf: url),
+              let entries = try? JSONDecoder().decode([SnoozeEntry].self, from: data) else { return [:] }
+        return Dictionary(uniqueKeysWithValues: entries.map { ($0.id, $0.until) })
     }
 
     private func persistSnoozesNow() {

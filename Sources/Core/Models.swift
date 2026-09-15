@@ -499,7 +499,7 @@ struct ApiResponse: Decodable {
         if let i = try? c.decodeIfPresent(Int.self, forKey: .status) {
             status = i
         } else if let s = try? c.decodeIfPresent(String.self, forKey: .status) {
-            status = Int(s ?? "")
+            status = Int(s)
         } else { status = nil }
 
         message        = try? c.decodeIfPresent(String.self, forKey: .message) ?? nil

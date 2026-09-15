@@ -65,7 +65,7 @@ final class AccountStore: ObservableObject {
         // The freshly promoted inbox will refresh the badge with its own
         // count; clearing it here covers the "no accounts left" case.
         if activeEmail == nil {
-            UIApplication.shared.setApplicationIconBadgeNumber(0)
+            BadgeCounter.set(0)
         }
     }
 
