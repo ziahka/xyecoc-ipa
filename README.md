@@ -35,6 +35,7 @@ The project connects directly to the official backend endpoints (`api.xyecoc.com
 * **Sender Blacklist:** Locally blocked addresses disappear from every list instantly, on top of the server-side block; the list is managed in Settings.
 * **Smart Locking:** The PIN is stored as PBKDF2-SHA256 with a random salt (legacy hashes migrate transparently), and the auto-lock delay is configurable: immediately, 1, 5 or 15 minutes.
 * **Reliability & Polish:** Polling refreshes the folder you are actually viewing, drafts autosave only when changed, cache writes are coalesced, batch actions run in parallel, destructive actions ask for confirmation, and attachments download without leaking the token to the browser.
+* **Make It Yours:** List density, snippet preview, date grouping (Today / Yesterday / Earlier), sorting, assignable swipe actions, undo-send with a countdown, send confirmation, a start folder, refresh interval, badge scope (inbox or all folders), a privacy shield for the app switcher, custom snooze date, and a haptics switch — all in Settings.
 
 ---
 

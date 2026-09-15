@@ -21,6 +21,7 @@ struct MailReaderView: View {
     @State private var downloadingAttachmentIds: Set<Int64> = []
     @State private var downloadError: String?
     @State private var otpCopied = false
+    @State private var showSnoozePicker = false
 
     @AppStorage("mail_font_size") private var mailFontSize: MailFontSize = .medium
     @AppStorage("block_remote_images") private var blockRemoteImages = false
@@ -93,6 +94,14 @@ struct MailReaderView: View {
         }
         .sheet(isPresented: $showFolderPicker) { folderPicker }
         .sheet(item: $composeSeed) { seed in ComposeView(seed: seed) }
+        .sheet(isPresented: $showSnoozePicker) {
+            SnoozeDatePickerSheet { date in
+                Task {
+                    await vm.snoozeCurrent(until: date)
+                    onChange()
+                }
+            }
+        }
         .sheet(isPresented: Binding(
             get: { shareItems != nil },
             set: { if !$0 { shareItems = nil } }
@@ -276,6 +285,12 @@ struct MailReaderView: View {
                     } label: {
                         Label(preset.title, systemImage: preset.systemImage)
                     }
+                }
+                Divider()
+                Button {
+                    showSnoozePicker = true
+                } label: {
+                    Label("Своё время…", systemImage: "calendar.badge.clock")
                 }
             } label: {
                 Label("Отложить", systemImage: "clock")

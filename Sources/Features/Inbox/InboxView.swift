@@ -1,4 +1,11 @@
 import SwiftUI
+
+/// Секция списка с группировкой по датам («Сегодня / Вчера / Ранее»).
+struct MailSection: Identifiable {
+    let id: String
+    let title: String
+    let mails: [MailItem]
+}
 import UIKit
 
 // MARK: - ViewModel
@@ -28,8 +35,8 @@ final class InboxViewModel: ObservableObject {
     // Polling
     @Published var unreadBadge: Int = 0
     @Published var snoozedCount: Int = 0
+    @Published var groupedSections: [MailSection] = []
     private var pollingTask: Task<Void, Never>?
-    private static let pollingInterval: UInt64 = 30_000_000_000 // 30 sec
 
     /// Mirrors the inbox unread count onto the app icon badge. The switch
     /// lives in Settings ("app_icon_badge"); turning it off clears the badge.
@@ -49,24 +56,54 @@ final class InboxViewModel: ObservableObject {
     func startIfNeeded() async {
         guard !didStart else { await reload(); return }
         didStart = true
+        applyStartFolder()
         await reload()
         await refresh()
         startPolling()
     }
 
+    /// Папка при запуске — настройка «start_folder»:
+    /// входящие / важные / последняя открытая.
+    private func applyStartFolder() {
+        switch Prefs.startFolder {
+        case .inbox:
+            break
+        case .important:
+            currentFolder = "important"
+        case .last:
+            if let last = UserDefaults.standard.string(forKey: "last_folder") {
+                currentFolder = last
+            }
+        }
+    }
+
     func startPolling() {
         pollingTask?.cancel()
         pollingTask = Task {
+            var lastMaxId = await db.maxMailId()
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: Self.pollingInterval)
+                // Интервал опроса — настройка «poll_interval»; 0 = вручную.
+                let interval = Prefs.pollInterval.seconds
+                try? await Task.sleep(nanoseconds: interval > 0 ? interval * 1_000_000_000 : 5_000_000_000)
                 guard !Task.isCancelled else { return }
                 // Poll the folder the user is actually looking at; the virtual
                 // snoozed folder has no server representation.
-                if currentFolder != snoozedFolderId {
+                if interval > 0 && currentFolder != snoozedFolderId {
                     _ = await repo.fetchMails(folder: currentFolder)
                 }
                 await reload()
-                unreadBadge = await db.unreadCount(folder: "inbox")
+                unreadBadge = await currentBadgeCount()
+                // Тост о новых письмах: считаем только входящие, чтобы
+                // собственные отправки и черновики не поднимали тост.
+                let newMaxId = await db.maxMailId()
+                if interval > 0, lastMaxId > 0, newMaxId > lastMaxId, Prefs.notifyNewMail {
+                    let fresh = await db.countNewer(than: lastMaxId, inFolder: "inbox")
+                    if fresh > 0 {
+                        Haptics.success()
+                        showToast("Новые письма: \(fresh)")
+                    }
+                }
+                lastMaxId = newMaxId
             }
         }
     }
@@ -77,7 +114,7 @@ final class InboxViewModel: ObservableObject {
     }
 
     func reload() async {
-        applyIconBadge(await db.unreadCount(folder: "inbox"))
+        applyIconBadge(await currentBadgeCount())
         if currentFolder == snoozedFolderId {
             mails = applySearch(await db.snoozedMails().map { $0.mail })
         } else {
@@ -87,12 +124,68 @@ final class InboxViewModel: ObservableObject {
             if !BlockedSendersStore.blocked.isEmpty {
                 visible = visible.filter { !BlockedSendersStore.isBlocked(senderEmail(of: $0)) }
             }
-            mails = applySearch(visible)
+            mails = applySearch(sortMails(visible))
         }
+        rebuildSections()
         folders = await db.folders()
         tags = await db.tags()
-        unreadBadge = await db.unreadCount(folder: "inbox")
+        unreadBadge = await currentBadgeCount()
         snoozedCount = await db.activeSnoozeCount()
+    }
+
+    /// Бейдж по настройке «badge_scope»: только входящие или все папки.
+    private func currentBadgeCount() async -> Int {
+        Prefs.badgeScope == .all ? await db.unreadCountAll() : await db.unreadCount(folder: "inbox")
+    }
+
+    /// Сортировка списка по настройке «sort_order».
+    private func sortMails(_ source: [MailItem]) -> [MailItem] {
+        switch Prefs.sortOrder {
+        case .newest:
+            return source.sorted { $0.id > $1.id }
+        case .oldest:
+            return source.sorted { $0.id < $1.id }
+        case .unreadFirst:
+            return source.sorted { a, b in
+                if a.read != b.read { return !a.read }
+                return a.id > b.id
+            }
+        }
+    }
+
+    /// Секции «Сегодня / Вчера / Ранее» по настройке «group_by_date».
+    private func rebuildSections() {
+        guard Prefs.groupByDate else {
+            groupedSections = []
+            return
+        }
+        let cal = Calendar.current
+        var today: [MailItem] = []
+        var yesterday: [MailItem] = []
+        var earlier: [MailItem] = []
+        for mail in displayedMails {
+            guard let date = DateUtils.parseISO(mail.createdAt) else {
+                earlier.append(mail)
+                continue
+            }
+            if cal.isDateInToday(date) {
+                today.append(mail)
+            } else if cal.isDateInYesterday(date) {
+                yesterday.append(mail)
+            } else {
+                earlier.append(mail)
+            }
+        }
+        var sections: [MailSection] = []
+        if !today.isEmpty { sections.append(MailSection(id: "today", title: "Сегодня", mails: today)) }
+        if !yesterday.isEmpty { sections.append(MailSection(id: "yesterday", title: "Вчера", mails: yesterday)) }
+        if !earlier.isEmpty { sections.append(MailSection(id: "earlier", title: "Ранее", mails: earlier)) }
+        groupedSections = sections
+    }
+
+    var showGroupedSections: Bool {
+        Prefs.groupByDate && !groupedSections.isEmpty && searchQuery.isEmpty
+            && currentFolder != snoozedFolderId && !filterUnreadOnly
     }
 
     private func senderEmail(of mail: MailItem) -> String {
@@ -142,6 +235,7 @@ final class InboxViewModel: ObservableObject {
     func selectFolder(_ folder: String) {
         guard folder != currentFolder else { return }
         currentFolder = folder
+        UserDefaults.standard.set(folder, forKey: "last_folder")
         filterUnreadOnly = false
         exitSelection()
         Task { await reload(); await refresh() }
@@ -425,6 +519,7 @@ struct InboxView: View {
     @State private var showStats = false
     @State private var showBatchDeleteAlert = false
     @State private var composeSeed: ComposeSeed?
+    @State private var snoozePickerMail: MailItem?
 
     private var searchBinding: Binding<String> {
         Binding(get: { vm.searchQuery }, set: { vm.onSearchChanged($0) })
@@ -441,11 +536,25 @@ struct InboxView: View {
     var body: some View {
         ZStack(alignment: .bottom) {
             List {
-                ForEach(vm.displayedMails) { mail in
-                    if vm.isSelecting {
-                        selectableRow(mail)
-                    } else {
-                        normalRow(mail)
+                if vm.showGroupedSections {
+                    ForEach(vm.groupedSections) { section in
+                        Section(section.title) {
+                            ForEach(section.mails) { mail in
+                                if vm.isSelecting {
+                                    selectableRow(mail)
+                                } else {
+                                    normalRow(mail)
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    ForEach(vm.displayedMails) { mail in
+                        if vm.isSelecting {
+                            selectableRow(mail)
+                        } else {
+                            normalRow(mail)
+                        }
                     }
                 }
             }
@@ -460,6 +569,11 @@ struct InboxView: View {
                 }
             }
             .refreshable { await vm.refresh() }
+            .sheet(item: $snoozePickerMail) { mail in
+                SnoozeDatePickerSheet { date in
+                    vm.snooze(mail, until: date)
+                }
+            }
             .safeAreaInset(edge: .top) {
                 VStack(spacing: 0) {
                     if !network.isConnected {
@@ -558,6 +672,15 @@ struct InboxView: View {
     // MARK: - Row variants
 
     @ViewBuilder
+    /// Отступы строк по настройке «list_density».
+    private var rowInsets: EdgeInsets {
+        switch Prefs.listDensity {
+        case .compact: return EdgeInsets(top: 3, leading: 16, bottom: 3, trailing: 12)
+        case .regular: return EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 12)
+        case .spacious: return EdgeInsets(top: 11, leading: 16, bottom: 11, trailing: 12)
+        }
+    }
+
     private func normalRow(_ mail: MailItem) -> some View {
         NavigationLink {
             MailReaderView(mailId: mail.id,
@@ -565,7 +688,7 @@ struct InboxView: View {
         } label: {
             MailRowView(state: MailRowState(mail: mail))
         }
-        .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 12))
+        .listRowInsets(rowInsets)
         .contextMenu {
             if vm.currentFolder == snoozedFolderId {
                 Button {
@@ -620,6 +743,12 @@ struct InboxView: View {
                             Label(preset.title, systemImage: preset.systemImage)
                         }
                     }
+                    Divider()
+                    Button {
+                        snoozePickerMail = mail
+                    } label: {
+                        Label("Своё время…", systemImage: "calendar.badge.clock")
+                    }
                 } label: {
                     Label("Отложить", systemImage: "clock")
                 }
@@ -645,48 +774,104 @@ struct InboxView: View {
             }
         }
         .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+            swipeButton(Prefs.swipeTrailing, mail: mail)
+            if Prefs.swipeTrailing != .delete {
+                Button(role: .destructive) {
+                    Haptics.warning()
+                    vm.delete(mail)
+                } label: {
+                    Label("Удалить", systemImage: "trash")
+                }
+            }
+            if Prefs.swipeTrailing != .spam {
+                Button {
+                    Haptics.medium()
+                    vm.moveToSpam(mail)
+                } label: {
+                    Label("Спам", systemImage: "exclamationmark.octagon")
+                }.tint(.red)
+            }
+        }
+        .swipeActions(edge: .leading, allowsFullSwipe: true) {
+            swipeButton(Prefs.swipeLeading, mail: mail)
+            if Prefs.swipeLeading != .read {
+                Button {
+                    Haptics.light()
+                    vm.setRead(mail, !mail.read)
+                } label: {
+                    Label(mail.read ? "Не прочитано" : "Прочитано",
+                          systemImage: mail.read ? "envelope.badge" : "envelope.open")
+                }.tint(.indigo)
+            }
+            if Prefs.swipeLeading != .copy {
+                Button {
+                    Haptics.medium()
+                    let emailToCopy = mail.fromEmail.isEmpty ? mail.sender : mail.fromEmail
+                    ClipboardManager.shared.copySecurely(text: emailToCopy)
+                } label: {
+                    Label("Копировать email", systemImage: "doc.on.doc")
+                }.tint(.blue)
+            }
+        }
+        .onAppear {
+            if mail.id == vm.displayedMails.last?.id {
+                Task { await vm.loadMore() }
+            }
+        }
+    }
+
+    /// Кнопка свайпа по настройке: назначаемое действие полного свайпа.
+    @ViewBuilder
+    private func swipeButton(_ kind: SwipeActionKind, mail: MailItem) -> some View {
+        switch kind {
+        case .trash:
             Button {
                 Haptics.medium()
                 vm.moveToTrash(mail)
             } label: {
                 Label("В корзину", systemImage: "trash")
-            }.tint(.orange)
-
+            }
+            .tint(.orange)
+        case .delete:
             Button(role: .destructive) {
                 Haptics.warning()
                 vm.delete(mail)
             } label: {
                 Label("Удалить", systemImage: "trash")
             }
-
-            Button {
-                Haptics.medium()
-                vm.moveToSpam(mail)
-            } label: {
-                Label("Спам", systemImage: "exclamationmark.octagon")
-            }.tint(.red)
-        }
-        .swipeActions(edge: .leading, allowsFullSwipe: true) {
-            Button {
-                Haptics.medium()
-                let emailToCopy = mail.fromEmail.isEmpty ? mail.sender : mail.fromEmail
-                ClipboardManager.shared.copySecurely(text: emailToCopy)
-            } label: {
-                Label("Копировать email", systemImage: "doc.on.doc")
-            }.tint(.blue)
-
+        case .read:
             Button {
                 Haptics.light()
                 vm.setRead(mail, !mail.read)
             } label: {
                 Label(mail.read ? "Не прочитано" : "Прочитано",
                       systemImage: mail.read ? "envelope.badge" : "envelope.open")
-            }.tint(.indigo)
-        }
-        .onAppear {
-            if mail.id == vm.displayedMails.last?.id {
-                Task { await vm.loadMore() }
             }
+            .tint(.indigo)
+        case .snooze:
+            Button {
+                snoozePickerMail = mail
+            } label: {
+                Label("Отложить…", systemImage: "clock")
+            }
+            .tint(.teal)
+        case .spam:
+            Button {
+                Haptics.medium()
+                vm.moveToSpam(mail)
+            } label: {
+                Label("Спам", systemImage: "exclamationmark.octagon")
+            }
+            .tint(.red)
+        case .copy:
+            Button {
+                Haptics.medium()
+                let emailToCopy = mail.fromEmail.isEmpty ? mail.sender : mail.fromEmail
+                ClipboardManager.shared.copySecurely(text: emailToCopy)
+            } label: {
+                Label("Копировать email", systemImage: "doc.on.doc")
+            }
+            .tint(.blue)
         }
     }
 
@@ -698,7 +883,7 @@ struct InboxView: View {
                 .font(.title3)
             MailRowView(state: MailRowState(mail: mail))
         }
-        .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 12))
+        .listRowInsets(rowInsets)
         .contentShape(Rectangle())
         .onTapGesture { vm.toggleSelection(for: mail) }
     }

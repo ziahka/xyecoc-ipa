@@ -326,6 +326,19 @@ actor MailDatabase {
         return result
     }
 
+    // MARK: - New-mail detection (polling toast)
+
+    func maxMailId() -> Int64 { mailsById.keys.max() ?? 0 }
+
+    /// Сколько писем новее заданного id; ограничение по папке — чтобы
+    /// собственные отправки и черновики не считались «новыми письмами».
+    func countNewer(than id: Int64, inFolder folder: String? = nil) -> Int {
+        guard id > 0 else { return 0 }
+        return mailsById.values.filter { $0.id > id && (folder == nil || $0.folder == folder) }.count
+    }
+
+    func unreadCountAll() -> Int { mailsById.values.filter { !$0.read }.count }
+
     // MARK: - HTML body cache
 
     private var htmlCache: [Int64: String] = [:]

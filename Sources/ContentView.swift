@@ -59,6 +59,24 @@ final class AuthViewModel: ObservableObject {
 
 // MARK: - Root
 
+/// Блюр-щит для переключателя задач: скрывает письма от чужих глаз,
+/// пока сцена не активна (настройка «privacy_switcher»).
+private struct PrivacyShieldOverlay: View {
+    var body: some View {
+        ZStack {
+            Rectangle().fill(.ultraThinMaterial)
+            VStack(spacing: 10) {
+                Image(systemName: "hand.raised.fill")
+                    .font(.largeTitle)
+                Text("Содержимое скрыто")
+                    .font(.headline)
+            }
+            .foregroundStyle(.secondary)
+        }
+        .ignoresSafeArea()
+    }
+}
+
 struct ContentView: View {
     @StateObject private var accounts = AccountStore()
     @ObservedObject private var security = SecurityManager.shared
@@ -94,6 +112,12 @@ struct ContentView: View {
                 }
                 .transition(.opacity)
                 .zIndex(999)
+            } else if scenePhase != .active, Prefs.privacySwitcher, accounts.activeEmail != nil {
+                // Щит приватности: в переключателе задач и на уведомлениях
+                // содержимое скрыто («privacy_switcher»).
+                PrivacyShieldOverlay()
+                    .transition(.opacity)
+                    .zIndex(998)
             }
         }
         .animation(.easeInOut(duration: 0.25), value: security.isLocked)
@@ -114,6 +138,7 @@ struct ContentView: View {
             }
             previousPhase = newPhase
         }
+        .animation(.easeInOut(duration: 0.15), value: scenePhase != .active)
     }
 }
 
