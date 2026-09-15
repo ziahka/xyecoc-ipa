@@ -27,6 +27,7 @@ struct ComposeSeed: Identifiable {
 final class ComposeViewModel: ObservableObject {
 
     @Published var isSending = false
+    @Published var isAutoSaving = false
     @Published var signature = ""
     @Published var signatureForReply = true
     @Published var signatureForNew = true
@@ -45,13 +46,16 @@ final class ComposeViewModel: ObservableObject {
     }
 
     /// Returns nil on success, or a localized error message on failure.
+    /// Автосохранение черновика идёт под isAutoSaving, чтобы не мигать
+    /// спиннером на кнопке отправки каждые несколько секунд.
     func send(recipients: String,
               subject: String,
               body: String,
               attachments: [Attachment],
               isDraft: Bool,
               isReply: Bool = false,
-              from: String? = nil) async -> String? {
+              from: String? = nil,
+              isAutosave: Bool = false) async -> String? {
         let users = recipients
             .split(separator: ",")
             .map { $0.trimmingCharacters(in: .whitespaces) }
@@ -66,14 +70,14 @@ final class ComposeViewModel: ObservableObject {
             fullBody = body
         }
 
-        isSending = true
+        if isAutosave { isAutoSaving = true } else { isSending = true }
         let response = await mailRepo.sendMail(recipients: users,
                                                subject: subject,
                                                messageHtml: fullBody,
                                                attachments: attachments,
                                                isDraft: isDraft,
                                                from: from)
-        isSending = false
+        if isAutosave { isAutoSaving = false } else { isSending = false }
         return response.isSuccess() ? nil : (response.message ?? "Ошибка при отправке письма")
     }
 }
@@ -194,12 +198,13 @@ struct ComposeView: View {
         autoSaveTask = Task {
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 5_000_000_000)
-                guard !Task.isCancelled, hasContent, !vm.isSending else { continue }
+                guard !Task.isCancelled, hasContent, !vm.isSending, !vm.isAutoSaving else { continue }
                 let key = draftContentKey
                 guard key != lastAutoSavedKey else { continue }
                 let error = await vm.send(recipients: to, subject: subject, body: bodyText,
                                           attachments: attachments, isDraft: true,
-                                          isReply: replyMode, from: selectedSender)
+                                          isReply: replyMode, from: selectedSender,
+                                          isAutosave: true)
                 if error == nil {
                     lastAutoSavedKey = key
                 }

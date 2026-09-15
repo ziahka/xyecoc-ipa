@@ -305,16 +305,25 @@ actor MailDatabase {
         return Set(snoozes.filter { $0.value > now }.keys)
     }
 
-    func activeSnoozeCount() -> Int { activeSnoozeIds().count }
+    func activeSnoozeCount() -> Int { snoozedMails().count }
 
     /// Snoozed mails that have not woken up yet, soonest first.
+    /// Осиротевшие записи (письмо удалено/вычищено из кэша) убираем сразу.
     func snoozedMails() -> [SnoozedMail] {
         let now = Date()
-        return snoozes.compactMap { id, until in
-            guard until > now, let mail = mailsById[id] else { return nil }
-            return SnoozedMail(mail: mail, until: until)
+        var changed = false
+        var result: [SnoozedMail] = []
+        for (id, until) in snoozes.sorted(by: { $0.value < $1.value }) {
+            guard until > now else { continue }
+            if let mail = mailsById[id] {
+                result.append(SnoozedMail(mail: mail, until: until))
+            } else {
+                snoozes[id] = nil
+                changed = true
+            }
         }
-        .sorted { $0.until < $1.until }
+        if changed { persistSnoozesNow() }
+        return result
     }
 
     // MARK: - HTML body cache
